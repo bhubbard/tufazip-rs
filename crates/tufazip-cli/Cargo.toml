@@ -1,0 +1,36 @@
+[package]
+name = "tufazip-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Command-line interface for tufazip pure-Rust neural lossless compression and decompression"
+
+[[bin]]
+name = "tufazip"
+path = "src/main.rs"
+
+[features]
+default = []
+accelerate = ["tufazip-codec/accelerate"]
+metal = ["tufazip-codec/metal"]
+cuda = ["tufazip-codec/cuda"]
+mkl = ["tufazip-codec/mkl"]
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+signal-hook.workspace = true
+tempfile.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tufazip-arith = { path = "../tufazip-arith" }
+tufazip-codec = { path = "../tufazip-codec" }
+tufazip-preprocess = { path = "../tufazip-preprocess" }
+tufazip-prior = { path = "../tufazip-prior" }
+
+[lints]
+workspace = true

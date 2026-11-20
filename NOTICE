@@ -1,0 +1,9 @@
+Third-party MIT-licensed code ported to Rust:
+
+- NNCP preprocessor: Copyright (c) 2018-2019 Fabrice Bellard.
+  https://bellard.org/nncp/ (`crates/tufazip-preprocess`)
+- Reference arithmetic coder: Copyright (c) 2026 Project Nayuki.
+  https://github.com/nayuki/Reference-arithmetic-coding (`crates/tufazip-arith`)
+- Upstream tufazip v2 neural codec and quantized prior specification:
+  Copyright (c) 2026 Tommy He.
+  https://github.com/Tufalabs/tufazip

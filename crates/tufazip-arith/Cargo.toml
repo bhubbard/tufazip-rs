@@ -1,0 +1,19 @@
+[package]
+name = "tufazip-arith"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Reference 32-bit range arithmetic coder, bit streams, and frequency quantization for tufazip"
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

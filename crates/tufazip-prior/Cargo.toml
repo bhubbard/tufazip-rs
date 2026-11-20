@@ -1,0 +1,23 @@
+[package]
+name = "tufazip-prior"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Reader, writer, and depth/loop prior validator for tufazip quantized weight archives (QPI1/QPR1/LRA1/QLA1)"
+
+[dependencies]
+half.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
