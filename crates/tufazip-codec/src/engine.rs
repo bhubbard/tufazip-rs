@@ -20,7 +20,7 @@ use crate::checkpoint::{
 use crate::config::{lr_at, resolve_device, CodecConfig, CodecMode, OnlineLoss};
 use crate::error::CodecError;
 use crate::model::{ForwardMode, OutputSlice, PriorLoadInfo, Transformer};
-use crate::optim::{clip_grad_norm, Adam};
+use crate::optim::Adam;
 use crate::rng::DeterministicRng;
 
 const LOG2: f64 = std::f64::consts::LN_2;
@@ -170,6 +170,20 @@ fn validate_resume_state(
     Ok(())
 }
 
+fn cross_entropy_sum_cpu(rows: &[Vec<f32>], targets: &[u32]) -> f64 {
+    let mut total_nats = 0.0f64;
+    for (row, &tgt) in rows.iter().zip(targets.iter()) {
+        let max_logit = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let mut sum_exp = 0.0f64;
+        for &v in row {
+            sum_exp += f64::from(v - max_logit).exp();
+        }
+        let target_val = f64::from(row[tgt as usize] - max_logit);
+        total_nats += sum_exp.ln() - target_val;
+    }
+    total_nats
+}
+
 fn cross_entropy_sum_detached(logits: &Tensor, targets: &Tensor) -> Result<f64, CodecError> {
     let n = targets.elem_count();
     if n == 0 {
@@ -281,12 +295,7 @@ fn run_prefix_retrain(
                 .to_dtype(DType::F32)?
                 .reshape((retrain_batch * length, vocab_size))?;
             let loss = candle_nn::loss::cross_entropy(&flat_logits, &tgt_t)?;
-            let mut grads = loss.backward()?;
-            clip_grad_norm(
-                state.model.named_vars(),
-                &mut grads,
-                state.config.optim.clip,
-            )?;
+            let grads = loss.backward()?;
 
             current_lr = state
                 .config
@@ -294,7 +303,9 @@ fn run_prefix_retrain(
                 .lr_schedule
                 .lr_at(*state.retrain_train_step);
             state.optimizer.set_learning_rate(current_lr);
-            state.optimizer.step(&grads)?;
+            state
+                .optimizer
+                .step_clipped(&grads, state.config.optim.clip)?;
             *state.retrain_train_step += 1;
 
             let loss_val = f64::from(loss.to_scalar::<f32>()?);
@@ -639,7 +650,7 @@ pub fn run_codec(
                 .squeeze(1)?
                 .to_dtype(DType::F32)?;
 
-            if encoder.is_some() || decoder.is_some() {
+            let cached_cpu_logits = if encoder.is_some() || decoder.is_some() {
                 let cpu_logits = code_logits
                     .detach()
                     .to_device(&Device::Cpu)?
@@ -655,22 +666,33 @@ pub fn run_codec(
                         enc.write(&freq_buf, usize::from(file_data[pos]))?;
                     }
                 }
-            }
+                Some(cpu_logits)
+            } else {
+                None
+            };
 
             let target_vec: Vec<u32> = stream_base
                 .iter()
                 .map(|&base| u32::from(file_data[base + stream_pos]))
                 .collect();
-            let code_targets = Tensor::from_vec(target_vec, batch, &device)?;
+            let code_targets = Tensor::from_vec(target_vec.clone(), batch, &device)?;
 
             let (loss, code_nats) = match config.online_loss {
                 OnlineLoss::Code => {
                     let loss = candle_nn::loss::cross_entropy(&code_logits, &code_targets)?;
-                    let nats = f64::from(loss.to_scalar::<f32>()?) * (batch as f64);
+                    let nats = if let Some(rows) = cached_cpu_logits.as_ref() {
+                        cross_entropy_sum_cpu(rows, &target_vec)
+                    } else {
+                        f64::from(loss.to_scalar::<f32>()?) * (batch as f64)
+                    };
                     (loss, nats)
                 }
                 OnlineLoss::Window => {
-                    let nats = cross_entropy_sum_detached(&code_logits, &code_targets)?;
+                    let nats = if let Some(rows) = cached_cpu_logits.as_ref() {
+                        cross_entropy_sum_cpu(rows, &target_vec)
+                    } else {
+                        cross_entropy_sum_detached(&code_logits, &code_targets)?
+                    };
                     let mut win_tgts = Vec::with_capacity(batch * seq_len);
                     if window == 0 {
                         for &base in &stream_base {
@@ -693,9 +715,8 @@ pub fn run_codec(
                 }
             };
 
-            let mut grads = loss.backward()?;
-            let _grad_norm = clip_grad_norm(model.named_vars(), &mut grads, config.optim.clip)?;
-            optimizer.step(&grads)?;
+            let grads = loss.backward()?;
+            let _grad_norm = optimizer.step_clipped(&grads, config.optim.clip)?;
 
             n_bits += code_nats / LOG2;
             n_symbols += batch;
@@ -898,6 +919,7 @@ mod tests {
     use tufazip_preprocess::write_tokens_be16;
 
     use super::*;
+    use crate::clip_grad_norm;
     use crate::config::{
         AutocastPolicy, ComputeDType, DeviceChoice, ModelConfig, NormStyle, PositionType,
     };

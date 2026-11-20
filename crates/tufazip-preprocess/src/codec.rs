@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
@@ -71,29 +71,109 @@ struct WordEntry {
     score: f32,
 }
 
-#[derive(Debug, Default)]
+const EMPTY_SLOT: u32 = u32::MAX;
+
+#[inline]
+const fn pack_pair(pair: [u16; 2]) -> u32 {
+    ((pair[0] as u32) << 16) | (pair[1] as u32)
+}
+
+#[inline]
+fn hash_pair_key(key: u32, mask: usize) -> usize {
+    let h = key.wrapping_mul(0x9E37_79B1);
+    ((h ^ (h >> 16)) as usize) & mask
+}
+
+#[derive(Debug)]
 struct WordList {
     words: Vec<WordEntry>,
-    pair_to_idx: HashMap<[u16; 2], usize>,
+    keys: Vec<u32>,
+    vals: Vec<u32>,
+    mask: usize,
 }
 
 impl WordList {
-    fn find(&self, pair: [u16; 2]) -> Option<usize> {
-        self.pair_to_idx.get(&pair).copied()
+    fn with_table_cap(cap: usize) -> Self {
+        let cap = cap.next_power_of_two().max(64);
+        Self {
+            words: Vec::new(),
+            keys: vec![0; cap],
+            vals: vec![EMPTY_SLOT; cap],
+            mask: cap - 1,
+        }
     }
 
-    fn find_or_insert(&mut self, pair: [u16; 2]) -> usize {
-        if let Some(&idx) = self.pair_to_idx.get(&pair) {
-            return idx;
+    fn clear(&mut self) {
+        self.words.clear();
+        self.vals.fill(EMPTY_SLOT);
+    }
+
+    fn grow(&mut self) {
+        let new_cap = (self.vals.len() * 2).max(64);
+        let new_mask = new_cap - 1;
+        let mut new_keys = vec![0u32; new_cap];
+        let mut new_vals = vec![EMPTY_SLOT; new_cap];
+        for (idx, entry) in self.words.iter().enumerate() {
+            let k = pack_pair(entry.pair);
+            let mut slot = hash_pair_key(k, new_mask);
+            while new_vals[slot] != EMPTY_SLOT {
+                slot = (slot + 1) & new_mask;
+            }
+            new_keys[slot] = k;
+            new_vals[slot] = idx as u32;
         }
-        let idx = self.words.len();
-        self.words.push(WordEntry {
-            pair,
-            freq: 0,
-            score: 0.0,
-        });
-        self.pair_to_idx.insert(pair, idx);
-        idx
+        self.keys = new_keys;
+        self.vals = new_vals;
+        self.mask = new_mask;
+    }
+
+    #[inline]
+    fn find(&self, pair: [u16; 2]) -> Option<usize> {
+        let k = pack_pair(pair);
+        let mut slot = hash_pair_key(k, self.mask);
+        loop {
+            let val = self.vals[slot];
+            if val == EMPTY_SLOT {
+                return None;
+            }
+            if self.keys[slot] == k {
+                return Some(val as usize);
+            }
+            slot = (slot + 1) & self.mask;
+        }
+    }
+
+    #[inline]
+    fn find_or_insert(&mut self, pair: [u16; 2]) -> usize {
+        if self.words.len() * 2 >= self.vals.len() {
+            self.grow();
+        }
+        let k = pack_pair(pair);
+        let mut slot = hash_pair_key(k, self.mask);
+        loop {
+            let val = self.vals[slot];
+            if val == EMPTY_SLOT {
+                let idx = self.words.len();
+                self.words.push(WordEntry {
+                    pair,
+                    freq: 0,
+                    score: 0.0,
+                });
+                self.keys[slot] = k;
+                self.vals[slot] = idx as u32;
+                return idx;
+            }
+            if self.keys[slot] == k {
+                return val as usize;
+            }
+            slot = (slot + 1) & self.mask;
+        }
+    }
+}
+
+impl Default for WordList {
+    fn default() -> Self {
+        Self::with_table_cap(4096)
     }
 }
 
@@ -107,31 +187,24 @@ fn expand_symbol(words: &[WordEntry], code: usize, out: &mut Vec<u8>) {
     }
 }
 
-fn get_n_bits(code: usize, cw: &WordList, char_freq: &[u32; NS], tot_freq: usize) -> f32 {
-    if code < NS {
-        -(((f64::from(char_freq[code]) / tot_freq as f64).log2()) as f32)
-    } else {
-        let p = &cw.words[code - NS];
-        if p.freq == 0 {
-            get_n_bits(usize::from(p.pair[0]), cw, char_freq, tot_freq)
-                + get_n_bits(usize::from(p.pair[1]), cw, char_freq, tot_freq)
+fn build_symbol_n_bits(cw: &WordList, char_freq: &[u32; NS], tot_freq: usize) -> Vec<f32> {
+    let total = tot_freq as f64;
+    let total_syms = NS + cw.words.len();
+    let mut n_bits = vec![0.0f32; total_syms];
+    for (c, &freq) in char_freq.iter().enumerate() {
+        n_bits[c] = -(((f64::from(freq) / total).log2()) as f32);
+    }
+    for (i, p) in cw.words.iter().enumerate() {
+        let code = NS + i;
+        n_bits[code] = if p.freq == 0 {
+            let a = usize::from(p.pair[0]);
+            let b = usize::from(p.pair[1]);
+            n_bits[a] + n_bits[b]
         } else {
-            -(((f64::from(p.freq) / tot_freq as f64).log2()) as f32)
-        }
+            -(((f64::from(p.freq) / total).log2()) as f32)
+        };
     }
-}
-
-fn compute_score(entry: &WordEntry, cw: &WordList, char_freq: &[u32; NS], tot_freq: usize) -> f32 {
-    if entry.freq <= 1 {
-        return -1.0;
-    }
-    let old_bits = (get_n_bits(usize::from(entry.pair[0]), cw, char_freq, tot_freq)
-        + get_n_bits(usize::from(entry.pair[1]), cw, char_freq, tot_freq))
-        * (entry.freq as f32);
-    let new_bits = ((-(f64::from(entry.freq) / tot_freq as f64).log2() + TOT_FREQ_RED_BITS)
-        * f64::from(entry.freq)
-        + SUBST_COST) as f32;
-    old_bits - new_bits
+    n_bits
 }
 
 fn select_best_words(
@@ -142,8 +215,20 @@ fn select_best_words(
     tot_freq: usize,
     min_freq: u32,
 ) -> usize {
+    let sym_bits = build_symbol_n_bits(cw, char_freq, tot_freq);
+    let total = tot_freq as f64;
     for entry in &mut ws.words {
-        entry.score = compute_score(entry, cw, char_freq, tot_freq);
+        if entry.freq <= 1 {
+            entry.score = -1.0;
+            continue;
+        }
+        let freq_f = entry.freq as f32;
+        let old_bits =
+            (sym_bits[usize::from(entry.pair[0])] + sym_bits[usize::from(entry.pair[1])]) * freq_f;
+        let new_bits = ((-(f64::from(entry.freq) / total).log2() + TOT_FREQ_RED_BITS)
+            * f64::from(entry.freq)
+            + SUBST_COST) as f32;
+        entry.score = old_bits - new_bits;
     }
 
     ws.words.sort_by(|a, b| {
@@ -215,6 +300,7 @@ fn update_word_freq(
     s: &mut WordList,
     char_freq: &mut [u32; NS],
     buf: &mut Vec<u16>,
+    scratch: &mut Vec<u16>,
     min_freq: u32,
 ) -> usize {
     compute_word_freq(s, char_freq, buf);
@@ -231,11 +317,11 @@ fn update_word_freq(
         return word_count;
     }
 
-    let mut obuf = Vec::with_capacity(buf.len());
+    scratch.clear();
     for &sym in buf.iter() {
-        out_word(&mut obuf, s, sym);
+        out_word(scratch, s, sym);
     }
-    *buf = obuf;
+    std::mem::swap(buf, scratch);
     compute_word_freq(s, char_freq, buf);
     word_count
 }
@@ -387,12 +473,14 @@ pub fn encode_bytes(
     let mut entropy_bits = compute_entropy(&s, &char_freq, buf.len());
     let mut seen_states = HashSet::new();
     seen_states.insert((s.words.len(), word_count, buf.len(), fnv1a_u16(&buf)));
+    let mut ws = WordList::with_table_cap(16384);
+    let mut scratch_buf = Vec::with_capacity(buf.len());
 
     while word_count < max_learned {
         if buf.len() < 2 {
             break;
         }
-        let mut ws = WordList::default();
+        ws.clear();
         for pair in buf.windows(2) {
             let idx = ws.find_or_insert([pair[0], pair[1]]);
             ws.words[idx].freq += 1;
@@ -409,23 +497,29 @@ pub fn encode_bytes(
             break;
         }
 
-        let mut next_buf = Vec::with_capacity(buf.len());
+        scratch_buf.clear();
         let mut i = 0usize;
         while i < buf.len() {
             if i + 1 < buf.len() {
                 if let Some(word_idx) = s.find([buf[i], buf[i + 1]]) {
-                    next_buf.push((NS + word_idx) as u16);
+                    scratch_buf.push((NS + word_idx) as u16);
                     i += 2;
                     continue;
                 }
             }
-            next_buf.push(buf[i]);
+            scratch_buf.push(buf[i]);
             i += 1;
         }
-        buf = next_buf;
+        std::mem::swap(&mut buf, &mut scratch_buf);
 
         let word_count_prev = word_count;
-        word_count = update_word_freq(&mut s, &mut char_freq, &mut buf, config.min_freq);
+        word_count = update_word_freq(
+            &mut s,
+            &mut char_freq,
+            &mut buf,
+            &mut scratch_buf,
+            config.min_freq,
+        );
         entropy_bits = compute_entropy(&s, &char_freq, buf.len());
         let state = (s.words.len(), word_count, buf.len(), fnv1a_u16(&buf));
         if word_count >= max_learned || word_count == word_count_prev || !seen_states.insert(state)

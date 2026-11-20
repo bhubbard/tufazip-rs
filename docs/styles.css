@@ -598,6 +598,12 @@ tbody td a {
   --label-3: "What It Verifies";
 }
 
+.bench-opt-table {
+  --label-2: "Before (fdf2b21)";
+  --label-3: "After (Optimized)";
+  --label-4: "Speedup";
+}
+
 .bench-core-table {
   --label-2: "Measured Time";
   --label-3: "Throughput";

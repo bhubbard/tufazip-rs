@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
-use candle_core::{DType, Device, Shape, Tensor, Var, D};
+use candle_core::{CpuStorage, CustomOp2, DType, Device, Layout, Shape, Storage, Tensor, Var, D};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tufazip_prior::{plan_depth_prior, read_archive, InitializationKind, PriorArchive};
@@ -60,6 +60,216 @@ pub struct PriorLoadInfo {
     pub policy: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct FusedCpuRmsNorm {
+    eps: f64,
+}
+
+impl FusedCpuRmsNorm {
+    fn compute_row_fwd(x_row: &[f32], w: &[f32], out_row: &mut [f32], eps: f64) {
+        let mut sq_acc = [0.0f32; 8];
+        let x_chunks = x_row.chunks_exact(8);
+        let x_rem = x_chunks.remainder();
+        for xc in x_chunks {
+            for i in 0..8 {
+                let x_v = xc[i];
+                sq_acc[i] += x_v * x_v;
+            }
+        }
+        let mut sum_sq = 0.0f64;
+        for &lane in &sq_acc {
+            sum_sq += f64::from(lane);
+        }
+        for &v in x_rem {
+            let fv = f64::from(v);
+            sum_sq += fv * fv;
+        }
+        let inv_rms = (1.0 / (sum_sq / (x_row.len() as f64) + eps).sqrt()) as f32;
+        for ((dst, &x_val), &w_val) in out_row.iter_mut().zip(x_row.iter()).zip(w.iter()) {
+            *dst = x_val * inv_rms * w_val;
+        }
+    }
+
+    fn compute_row_bwd(
+        x_row: &[f32],
+        dy_row: &[f32],
+        w: &[f32],
+        gx_row: &mut [f32],
+        gw_acc: &mut [f64],
+        eps: f64,
+    ) {
+        let dim = x_row.len();
+        let mut sq_acc = [0.0f32; 8];
+        let mut dot_acc = [0.0f32; 8];
+        let x_chunks = x_row.chunks_exact(8);
+        let dy_chunks = dy_row.chunks_exact(8);
+        let w_chunks = w.chunks_exact(8);
+        let x_rem = x_chunks.remainder();
+        let dy_rem = dy_chunks.remainder();
+        let w_rem = w_chunks.remainder();
+        for ((xc, dyc), wc) in x_chunks.zip(dy_chunks).zip(w_chunks) {
+            for i in 0..8 {
+                let x_v = xc[i];
+                sq_acc[i] += x_v * x_v;
+                dot_acc[i] += dyc[i] * wc[i] * x_v;
+            }
+        }
+        let mut sum_sq = 0.0f64;
+        let mut dot = 0.0f64;
+        for i in 0..8 {
+            sum_sq += f64::from(sq_acc[i]);
+            dot += f64::from(dot_acc[i]);
+        }
+        for ((&x_v, &dy_v), &w_v) in x_rem.iter().zip(dy_rem.iter()).zip(w_rem.iter()) {
+            let x_f = f64::from(x_v);
+            sum_sq += x_f * x_f;
+            dot += f64::from(dy_v) * f64::from(w_v) * x_f;
+        }
+        let inv_rms = 1.0 / (sum_sq / (dim as f64) + eps).sqrt();
+        let coeff = dot * inv_rms * inv_rms / (dim as f64);
+        let inv_rms_f32 = inv_rms as f32;
+        let coeff_f32 = coeff as f32;
+        for ((((gx_slot, &dy_val), &w_val), &x_val), gw_slot) in gx_row
+            .iter_mut()
+            .zip(dy_row.iter())
+            .zip(w.iter())
+            .zip(x_row.iter())
+            .zip(gw_acc.iter_mut())
+        {
+            *gx_slot = inv_rms_f32 * (dy_val * w_val - x_val * coeff_f32);
+            let dy_f = f64::from(dy_val);
+            let x_f = f64::from(x_val);
+            *gw_slot += dy_f * x_f * inv_rms;
+        }
+    }
+}
+
+impl CustomOp2 for FusedCpuRmsNorm {
+    fn name(&self) -> &'static str {
+        "fused-cpu-rms-norm"
+    }
+
+    fn cpu_fwd(
+        &self,
+        s1: &CpuStorage,
+        l1: &Layout,
+        s2: &CpuStorage,
+        l2: &Layout,
+    ) -> candle_core::Result<(CpuStorage, Shape)> {
+        let (x_start, x_end) = l1.contiguous_offsets().ok_or_else(|| {
+            candle_core::Error::Msg("fused-cpu-rms-norm requires contiguous x".to_owned())
+        })?;
+        let (w_start, w_end) = l2.contiguous_offsets().ok_or_else(|| {
+            candle_core::Error::Msg("fused-cpu-rms-norm requires contiguous weight".to_owned())
+        })?;
+        let x_all = match s1 {
+            CpuStorage::F32(v) => &v[x_start..x_end],
+            _ => {
+                return Err(candle_core::Error::Msg(
+                    "fused-cpu-rms-norm expects F32 x".to_owned(),
+                ))
+            }
+        };
+        let w = match s2 {
+            CpuStorage::F32(v) => &v[w_start..w_end],
+            _ => {
+                return Err(candle_core::Error::Msg(
+                    "fused-cpu-rms-norm expects F32 weight".to_owned(),
+                ))
+            }
+        };
+        let dim = w.len();
+        if dim == 0 || l1.dims().last() != Some(&dim) || x_all.len() % dim != 0 {
+            return Err(candle_core::Error::Msg(format!(
+                "fused-cpu-rms-norm shape mismatch: x={:?}, w={:?}",
+                l1.shape(),
+                l2.shape()
+            )));
+        }
+        let mut out = vec![0.0f32; x_all.len()];
+        let eps = self.eps;
+        for (out_row, x_row) in out.chunks_exact_mut(dim).zip(x_all.chunks_exact(dim)) {
+            Self::compute_row_fwd(x_row, w, out_row, eps);
+        }
+        Ok((CpuStorage::F32(out), l1.shape().clone()))
+    }
+
+    fn bwd(
+        &self,
+        arg1: &Tensor,
+        arg2: &Tensor,
+        _res: &Tensor,
+        grad_res: &Tensor,
+    ) -> candle_core::Result<(Option<Tensor>, Option<Tensor>)> {
+        let x_c = if arg1.is_contiguous() && arg1.dtype() == DType::F32 {
+            arg1.clone()
+        } else {
+            arg1.to_dtype(DType::F32)?.contiguous()?
+        };
+        let w_c = if arg2.is_contiguous() && arg2.dtype() == DType::F32 {
+            arg2.clone()
+        } else {
+            arg2.to_dtype(DType::F32)?.contiguous()?
+        };
+        let dy_c = if grad_res.is_contiguous() && grad_res.dtype() == DType::F32 {
+            grad_res.clone()
+        } else {
+            grad_res.to_dtype(DType::F32)?.contiguous()?
+        };
+
+        let (x_st, x_l) = x_c.storage_and_layout();
+        let (w_st, w_l) = w_c.storage_and_layout();
+        let (dy_st, dy_l) = dy_c.storage_and_layout();
+        let (x_s, x_e) = x_l
+            .contiguous_offsets()
+            .ok_or_else(|| candle_core::Error::Msg("non-contiguous x in RmsNorm bwd".to_owned()))?;
+        let (w_s, w_e) = w_l
+            .contiguous_offsets()
+            .ok_or_else(|| candle_core::Error::Msg("non-contiguous w in RmsNorm bwd".to_owned()))?;
+        let (dy_s, dy_e) = dy_l.contiguous_offsets().ok_or_else(|| {
+            candle_core::Error::Msg("non-contiguous dy in RmsNorm bwd".to_owned())
+        })?;
+
+        let (x_slice, w_slice, dy_slice) = match (&*x_st, &*w_st, &*dy_st) {
+            (
+                Storage::Cpu(CpuStorage::F32(xv)),
+                Storage::Cpu(CpuStorage::F32(wv)),
+                Storage::Cpu(CpuStorage::F32(dyv)),
+            ) => (&xv[x_s..x_e], &wv[w_s..w_e], &dyv[dy_s..dy_e]),
+            _ => {
+                return Err(candle_core::Error::Msg(
+                    "fused-cpu-rms-norm bwd expects F32 CPU storage".to_owned(),
+                ))
+            }
+        };
+
+        let dim = w_slice.len();
+        if dim == 0 || x_slice.is_empty() {
+            return Ok((
+                Some(Tensor::zeros(arg1.shape(), DType::F32, arg1.device())?),
+                Some(Tensor::zeros(arg2.shape(), DType::F32, arg2.device())?),
+            ));
+        }
+
+        let mut gx = vec![0.0f32; x_slice.len()];
+        let mut gw_acc = vec![0.0f64; dim];
+        let eps = self.eps;
+
+        for ((gx_row, x_row), dy_row) in gx
+            .chunks_exact_mut(dim)
+            .zip(x_slice.chunks_exact(dim))
+            .zip(dy_slice.chunks_exact(dim))
+        {
+            Self::compute_row_bwd(x_row, dy_row, w_slice, gx_row, &mut gw_acc, eps);
+        }
+
+        let gw: Vec<f32> = gw_acc.into_iter().map(|v| v as f32).collect();
+        let gx_t = Tensor::from_vec(gx, arg1.shape().clone(), arg1.device())?;
+        let gw_t = Tensor::from_vec(gw, arg2.shape().clone(), arg2.device())?;
+        Ok((Some(gx_t), Some(gw_t)))
+    }
+}
+
 #[derive(Debug, Clone)]
 struct RmsNorm {
     weight: Option<Var>,
@@ -79,10 +289,7 @@ impl RmsNorm {
         })
     }
 
-    fn forward(&self, x: &Tensor) -> Result<Tensor, CodecError> {
-        let Some(weight) = &self.weight else {
-            return Ok(x.clone());
-        };
+    fn forward_unfused(&self, x: &Tensor, weight: &Var) -> Result<Tensor, CodecError> {
         let x_dtype = x.dtype();
         let x_f32 = if x_dtype == DType::F32 {
             x.clone()
@@ -103,6 +310,21 @@ impl RmsNorm {
             weight.as_tensor().to_dtype(x_dtype)?
         };
         Ok(normed_cast.broadcast_mul(&w)?)
+    }
+
+    fn forward(&self, x: &Tensor) -> Result<Tensor, CodecError> {
+        let Some(weight) = &self.weight else {
+            return Ok(x.clone());
+        };
+        if x.device().is_cpu() && x.dtype() == DType::F32 && weight.dtype() == DType::F32 {
+            let x_c = if x.is_contiguous() {
+                x.clone()
+            } else {
+                x.contiguous()?
+            };
+            return Ok(x_c.apply_op2(weight.as_tensor(), FusedCpuRmsNorm { eps: self.eps })?);
+        }
+        self.forward_unfused(x, weight)
     }
 }
 
@@ -171,41 +393,30 @@ fn build_rope_cache(
         }
     }
 
-    let cos = Tensor::from_vec(cos_data, (ctx_len, head_dim), device)?;
-    let sin = Tensor::from_vec(sin_data, (ctx_len, head_dim), device)?;
+    let cos = Tensor::from_vec(cos_data, (1, 1, ctx_len, head_dim), device)?;
+    let sin = Tensor::from_vec(sin_data, (1, 1, ctx_len, head_dim), device)?;
     Ok((cos, sin))
 }
 
 fn apply_rope(x: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor, CodecError> {
     let head_dim = x.dim(D::Minus1)?;
     let half = head_dim / 2;
-    let x_dtype = x.dtype();
-    let cos = if cos.dtype() == x_dtype {
-        cos.clone()
-    } else {
-        cos.to_dtype(x_dtype)?
-    };
-    let sin = if sin.dtype() == x_dtype {
-        sin.clone()
-    } else {
-        sin.to_dtype(x_dtype)?
-    };
     let x1 = x.narrow(D::Minus1, 0, half)?;
     let x2 = x.narrow(D::Minus1, half, half)?;
     let rotated = Tensor::cat(&[&x2.neg()?, &x1], D::Minus1)?;
-    let term1 = x.broadcast_mul(&cos)?;
-    let term2 = rotated.broadcast_mul(&sin)?;
+    let term1 = x.broadcast_mul(cos)?;
+    let term2 = rotated.broadcast_mul(sin)?;
     Ok((term1 + term2)?)
 }
 
-fn causal_mask(seq: usize, device: &Device) -> Result<Tensor, CodecError> {
-    let mut data = vec![0u8; seq * seq];
-    for i in 0..seq {
-        for j in (i + 1)..seq {
-            data[i * seq + j] = 1;
+fn build_causal_mask(ctx_len: usize, device: &Device) -> Result<Tensor, CodecError> {
+    let mut data = vec![0.0f32; ctx_len * ctx_len];
+    for i in 0..ctx_len {
+        for j in (i + 1)..ctx_len {
+            data[i * ctx_len + j] = f32::NEG_INFINITY;
         }
     }
-    Ok(Tensor::from_vec(data, (1, 1, seq, seq), device)?)
+    Ok(Tensor::from_vec(data, (1, 1, ctx_len, ctx_len), device)?)
 }
 
 #[derive(Debug, Clone)]
@@ -296,26 +507,19 @@ impl Attention {
         x: &Tensor,
         rope_cos: Option<&Tensor>,
         rope_sin: Option<&Tensor>,
+        causal_mask: Option<&Tensor>,
         mode: &mut ForwardMode<'_>,
         compute_dtype: DType,
     ) -> Result<Tensor, CodecError> {
         let (batch, seq, d_model) = x.dims3()?;
         let qkv = linear_forward(x, &self.qkv, compute_dtype)?;
-        let q = qkv
-            .narrow(2, 0, d_model)?
-            .reshape((batch, seq, self.n_head, self.d_head))?
-            .transpose(1, 2)?
+        let qkv_split = qkv
+            .reshape((batch, seq, 3, self.n_head, self.d_head))?
+            .permute((2, 0, 3, 1, 4))?
             .contiguous()?;
-        let k = qkv
-            .narrow(2, d_model, d_model)?
-            .reshape((batch, seq, self.n_head, self.d_head))?
-            .transpose(1, 2)?
-            .contiguous()?;
-        let v = qkv
-            .narrow(2, 2 * d_model, d_model)?
-            .reshape((batch, seq, self.n_head, self.d_head))?
-            .transpose(1, 2)?
-            .contiguous()?;
+        let q = qkv_split.narrow(0, 0, 1)?.squeeze(0)?;
+        let k = qkv_split.narrow(0, 1, 1)?.squeeze(0)?;
+        let v = qkv_split.narrow(0, 2, 1)?.squeeze(0)?;
 
         let q = self.q_norm.forward(&q)?;
         let k = self.k_norm.forward(&k)?;
@@ -377,11 +581,8 @@ impl Attention {
             (content_score + pos_score)?.affine(scale, 0.0)?
         };
 
-        let masked = if seq > 1 {
-            let mask = causal_mask(seq, x.device())?.broadcast_as(scores.shape())?;
-            let neg_inf =
-                Tensor::new(f32::NEG_INFINITY, x.device())?.broadcast_as(scores.shape())?;
-            mask.where_cond(&neg_inf, &scores)?
+        let masked = if let Some(mask) = causal_mask {
+            scores.broadcast_add(mask)?
         } else {
             scores
         };
@@ -467,15 +668,21 @@ impl Block {
         x: &Tensor,
         rope_cos: Option<&Tensor>,
         rope_sin: Option<&Tensor>,
+        causal_mask: Option<&Tensor>,
         mode: &mut ForwardMode<'_>,
         compute_dtype: DType,
     ) -> Result<Tensor, CodecError> {
         match self.norm_style {
             NormStyle::Peri => {
                 let normed_attn_in = self.attn_pre_norm.forward(x)?;
-                let attn_out =
-                    self.attn
-                        .forward(&normed_attn_in, rope_cos, rope_sin, mode, compute_dtype)?;
+                let attn_out = self.attn.forward(
+                    &normed_attn_in,
+                    rope_cos,
+                    rope_sin,
+                    causal_mask,
+                    mode,
+                    compute_dtype,
+                )?;
                 let attn_out = self.attn_post_norm.forward(&attn_out)?;
                 let attn_out = apply_dropout(&attn_out, self.dropout, mode)?;
                 let x = (x + attn_out)?;
@@ -487,9 +694,9 @@ impl Block {
                 Ok((x + ffn_out)?)
             }
             NormStyle::Post => {
-                let attn_out = self
-                    .attn
-                    .forward(x, rope_cos, rope_sin, mode, compute_dtype)?;
+                let attn_out =
+                    self.attn
+                        .forward(x, rope_cos, rope_sin, causal_mask, mode, compute_dtype)?;
                 let attn_out = apply_dropout(&attn_out, self.dropout, mode)?;
                 let x = self.attn_post_norm.forward(&(x + attn_out)?)?;
 
@@ -513,6 +720,7 @@ pub struct Transformer {
     head: Var,
     rope_cos: Option<Tensor>,
     rope_sin: Option<Tensor>,
+    causal_mask: Tensor,
     named_vars: Vec<(String, Var)>,
     state_vars: BTreeMap<String, Var>,
 }
@@ -673,6 +881,8 @@ impl Transformer {
             !config.tie_embeddings,
         );
 
+        let causal_mask = build_causal_mask(config.ctx_len, device)?;
+
         Ok(Self {
             config: config.clone(),
             block_schedule,
@@ -683,6 +893,7 @@ impl Transformer {
             head,
             rope_cos,
             rope_sin,
+            causal_mask,
             named_vars,
             state_vars,
         })
@@ -709,8 +920,27 @@ impl Transformer {
         }
 
         let (cos_slice, sin_slice) = match (&self.rope_cos, &self.rope_sin) {
-            (Some(c), Some(s)) => (Some(c.narrow(0, 0, seq)?), Some(s.narrow(0, 0, seq)?)),
+            (Some(c), Some(s)) => {
+                let cn = c.narrow(2, 0, seq)?;
+                let sn = s.narrow(2, 0, seq)?;
+                let cn = if cn.dtype() == compute_dtype {
+                    cn
+                } else {
+                    cn.to_dtype(compute_dtype)?
+                };
+                let sn = if sn.dtype() == compute_dtype {
+                    sn
+                } else {
+                    sn.to_dtype(compute_dtype)?
+                };
+                (Some(cn), Some(sn))
+            }
             _ => (None, None),
+        };
+        let causal_mask = if seq > 1 {
+            Some(self.causal_mask.narrow(2, 0, seq)?.narrow(3, 0, seq)?)
+        } else {
+            None
         };
 
         let flat_idx = idx.flatten_all()?;
@@ -731,6 +961,7 @@ impl Transformer {
                 &x,
                 cos_slice.as_ref(),
                 sin_slice.as_ref(),
+                causal_mask.as_ref(),
                 mode,
                 compute_dtype,
             )?;
@@ -939,5 +1170,84 @@ impl Transformer {
             sum_sq += f64::from(sq.to_scalar::<f32>()?);
         }
         Ok(sum_sq.sqrt())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fused_cpu_rms_norm_matches_unfused_fwd_and_bwd() {
+        for (rows, dim) in [(4usize, 16usize), (96usize, 32usize)] {
+            let mut x_data = Vec::with_capacity(rows * dim);
+            for i in 0..(rows * dim) {
+                x_data.push(((i % 23) as f32 - 11.0) * 0.13);
+            }
+            let w_data: Vec<f32> = (0..dim).map(|j| 0.7 + (j % 7) as f32 * 0.11).collect();
+            let dy_data: Vec<f32> = (0..(rows * dim))
+                .map(|i| ((i * 5 % 19) as f32 - 9.0) * 0.05)
+                .collect();
+
+            let dy = Tensor::from_slice(&dy_data, (rows, dim), &Device::Cpu).unwrap();
+
+            let x_ref = Var::from_slice(&x_data, (rows, dim), &Device::Cpu).unwrap();
+            let w_ref = Var::from_slice(&w_data, dim, &Device::Cpu).unwrap();
+            let norm_ref = RmsNorm {
+                weight: Some(w_ref.clone()),
+                eps: RMS_NORM_EPS,
+            };
+            let out_ref = norm_ref.forward_unfused(x_ref.as_tensor(), &w_ref).unwrap();
+            let loss_ref = (&out_ref * &dy).unwrap().sum_all().unwrap();
+            let grads_ref = loss_ref.backward().unwrap();
+
+            let x_opt = Var::from_slice(&x_data, (rows, dim), &Device::Cpu).unwrap();
+            let w_opt = Var::from_slice(&w_data, dim, &Device::Cpu).unwrap();
+            let norm_opt = RmsNorm {
+                weight: Some(w_opt.clone()),
+                eps: RMS_NORM_EPS,
+            };
+            let out_opt = norm_opt.forward(x_opt.as_tensor()).unwrap();
+            let loss_opt = (&out_opt * &dy).unwrap().sum_all().unwrap();
+            let grads_opt = loss_opt.backward().unwrap();
+
+            let out_r = out_ref.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+            let out_o = out_opt.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+            for (got, want) in out_o.iter().zip(out_r.iter()) {
+                assert!((got - want).abs() < 1e-5, "fwd mismatch: {got} vs {want}");
+            }
+
+            let gx_r = grads_ref
+                .get(x_ref.as_tensor())
+                .unwrap()
+                .flatten_all()
+                .unwrap()
+                .to_vec1::<f32>()
+                .unwrap();
+            let gx_o = grads_opt
+                .get(x_opt.as_tensor())
+                .unwrap()
+                .flatten_all()
+                .unwrap()
+                .to_vec1::<f32>()
+                .unwrap();
+            for (got, want) in gx_o.iter().zip(gx_r.iter()) {
+                assert!((got - want).abs() < 1e-4, "gx mismatch: {got} vs {want}");
+            }
+
+            let gw_r = grads_ref
+                .get(w_ref.as_tensor())
+                .unwrap()
+                .to_vec1::<f32>()
+                .unwrap();
+            let gw_o = grads_opt
+                .get(w_opt.as_tensor())
+                .unwrap()
+                .to_vec1::<f32>()
+                .unwrap();
+            for (got, want) in gw_o.iter().zip(gw_r.iter()) {
+                assert!((got - want).abs() < 1e-4, "gw mismatch: {got} vs {want}");
+            }
+        }
     }
 }

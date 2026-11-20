@@ -69,6 +69,7 @@ impl CoderCore {
         })
     }
 
+    #[inline]
     fn validate_table(&self, freqs: &[u32]) -> Result<u64, ArithError> {
         let total = *freqs.last().ok_or(ArithError::EmptyFreqTable)?;
         let total_u64 = u64::from(total);
@@ -81,6 +82,7 @@ impl CoderCore {
         Ok(total_u64)
     }
 
+    #[inline]
     fn update<F>(&mut self, freqs: &[u32], symbol: usize, mut on_event: F) -> Result<(), ArithError>
     where
         F: FnMut(UpdateEvent) -> Result<(), ArithError>,
@@ -98,12 +100,19 @@ impl CoderCore {
             return Err(ArithError::ZeroFrequencySymbol(symbol));
         }
 
-        let low_u128 = u128::from(self.low);
-        let range_u128 = u128::from(self.high - self.low + 1);
-        let total_u128 = u128::from(total);
-
-        let new_low = (low_u128 + (u128::from(sym_low) * range_u128) / total_u128) as u64;
-        let new_high = (low_u128 + (u128::from(sym_high) * range_u128) / total_u128 - 1) as u64;
+        let (new_low, new_high) = if self.num_state_bits <= 32 {
+            let range = self.high - self.low + 1;
+            let new_low = self.low + (u64::from(sym_low) * range) / total;
+            let new_high = self.low + (u64::from(sym_high) * range) / total - 1;
+            (new_low, new_high)
+        } else {
+            let low_u128 = u128::from(self.low);
+            let range_u128 = u128::from(self.high - self.low + 1);
+            let total_u128 = u128::from(total);
+            let new_low = (low_u128 + (u128::from(sym_low) * range_u128) / total_u128) as u64;
+            let new_high = (low_u128 + (u128::from(sym_high) * range_u128) / total_u128 - 1) as u64;
+            (new_low, new_high)
+        };
         self.low = new_low;
         self.high = new_high;
 
@@ -160,6 +169,7 @@ impl<W: Write> ArithmeticEncoder<W> {
     /// # Errors
     ///
     /// Returns [`ArithError`] if `freqs` or `symbol` is invalid or writing fails.
+    #[inline]
     pub fn write(&mut self, freqs: &[u32], symbol: usize) -> Result<(), ArithError> {
         let num_state_bits = self.core.num_state_bits;
         let output = &mut self.output;
@@ -273,24 +283,21 @@ impl<R: Read> ArithmeticDecoder<R> {
     /// # Errors
     ///
     /// Returns [`ArithError`] if `freqs` is invalid or reading from the bit stream fails.
+    #[inline]
     pub fn read(&mut self, freqs: &[u32]) -> Result<usize, ArithError> {
         let total = self.core.validate_table(freqs)?;
-        let range = u128::from(self.core.high - self.core.low + 1);
-        let offset = u128::from(self.code - self.core.low);
-        let value = (((offset + 1) * u128::from(total) - 1) / range) as u64;
+        let value = if self.core.num_state_bits <= 32 {
+            let range = self.core.high - self.core.low + 1;
+            let offset = self.code - self.core.low;
+            ((offset + 1) * total - 1) / range
+        } else {
+            let range = u128::from(self.core.high - self.core.low + 1);
+            let offset = u128::from(self.code - self.core.low);
+            (((offset + 1) * u128::from(total) - 1) / range) as u64
+        };
 
-        let mut start = 0usize;
-        let mut end = freqs.len();
-        while end - start > 1 {
-            let middle = (start + end) >> 1;
-            let sym_low = u64::from(freqs[middle - 1]);
-            if sym_low > value {
-                end = middle;
-            } else {
-                start = middle;
-            }
-        }
-        let symbol = start;
+        let value_u32 = value as u32;
+        let symbol = freqs.partition_point(|&cum| cum <= value_u32);
 
         let half_range = self.core.half_range;
         let state_mask = self.core.state_mask;
@@ -378,19 +385,22 @@ pub fn make_freq_table_into(logits: &[f32], out: &mut Vec<u32>) {
     let max_logit = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     let mut sum_exp = 0.0f32;
     out.reserve(logits.len());
-    // Temporarily store exp values? Better: two passes over logits without extra allocation.
+    // Pass 1: store positive exp(x - max_logit) bit patterns directly in `out`
+    // so we avoid computing `f32::exp` twice with zero extra allocations.
     for &x in logits {
-        sum_exp += (x - max_logit).exp();
+        let e = (x - max_logit).exp();
+        sum_exp += e;
+        out.push(e.to_bits());
     }
     let inv_sum = 1.0f32 / sum_exp;
     let scale = FREQ_TOTAL as f32;
     let mut cum = 0u32;
-    for &x in logits {
-        let prob = (x - max_logit).exp() * inv_sum;
+    for slot in out.iter_mut() {
+        let prob = f32::from_bits(*slot) * inv_sum;
         let rounded = (prob * scale).round_ties_even();
         let freq = (rounded as i64).max(1) as u32;
         cum = cum.saturating_add(freq);
-        out.push(cum);
+        *slot = cum;
     }
 }
 
@@ -584,5 +594,86 @@ mod tests {
             enc.bit_stream_mut().write_bit(2),
             Err(ArithError::InvalidBit(2))
         ));
+    }
+
+    #[test]
+    fn single_pass_freq_table_matches_two_pass_reference_bit_for_bit() {
+        fn ref_two_pass(logits: &[f32]) -> Vec<u32> {
+            if logits.is_empty() {
+                return Vec::new();
+            }
+            let max_logit = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let mut sum_exp = 0.0f32;
+            for &x in logits {
+                sum_exp += (x - max_logit).exp();
+            }
+            let inv_sum = 1.0f32 / sum_exp;
+            let scale = FREQ_TOTAL as f32;
+            let mut cum = 0u32;
+            let mut out = Vec::with_capacity(logits.len());
+            for &x in logits {
+                let prob = (x - max_logit).exp() * inv_sum;
+                let rounded = (prob * scale).round_ties_even();
+                let freq = (rounded as i64).max(1) as u32;
+                cum = cum.saturating_add(freq);
+                out.push(cum);
+            }
+            out
+        }
+
+        let cases: &[&[f32]] = &[&[], &[0.0], &[-100.0, 0.0, 100.0, -50.0, 99.5], &[1.0; 128]];
+        for case in cases {
+            assert_eq!(make_freq_table(case), ref_two_pass(case));
+        }
+
+        let mut large = vec![-12.0f32; 4097];
+        for (i, slot) in large.iter_mut().enumerate() {
+            *slot = -6.0 + ((i * 37) % 101) as f32 * 0.11;
+        }
+        large[42] = 9.75;
+        let mut reused = Vec::with_capacity(4097);
+        make_freq_table_into(&large, &mut reused);
+        assert_eq!(reused, ref_two_pass(&large));
+    }
+
+    #[test]
+    fn u64_fast_path_matches_32bit_and_wide_state_roundtrip() {
+        // Test 32-bit u64 fast path with FREQ_TOTAL ~10M logits and sparse zero-frequency CDFs,
+        // plus 40-bit u128 fallback path.
+        let mut logits = vec![-12.0f32; 512];
+        logits[0] = 6.0;
+        logits[255] = 4.5;
+        logits[511] = 3.0;
+        let dense_cdf = make_freq_table(&logits);
+        // Construct a sparse CDF containing zero-frequency intervals between active symbols.
+        let sparse_cdf = vec![10, 10, 10, 1_000_000, 1_000_000, FREQ_TOTAL, FREQ_TOTAL];
+
+        let dense_syms = [0usize, 1, 255, 511, 0, 510, 511, 42, 255, 0];
+        let sparse_syms = [0usize, 3, 5, 0, 5, 3];
+
+        for bits in [DEFAULT_STATE_BITS, 40u32] {
+            let mut bytes = Vec::new();
+            let mut enc = ArithmeticEncoder::new(bits, BitOutputStream::new(&mut bytes)).unwrap();
+            for &s in &dense_syms {
+                enc.write(&dense_cdf, s).unwrap();
+            }
+            for &s in &sparse_syms {
+                enc.write(&sparse_cdf, s).unwrap();
+            }
+            let bytes = enc.into_inner().unwrap();
+
+            let mut dec =
+                ArithmeticDecoder::new(bits, BitInputStream::new(Cursor::new(&bytes))).unwrap();
+            let mut got_dense = Vec::with_capacity(dense_syms.len());
+            for _ in 0..dense_syms.len() {
+                got_dense.push(dec.read(&dense_cdf).unwrap());
+            }
+            let mut got_sparse = Vec::with_capacity(sparse_syms.len());
+            for _ in 0..sparse_syms.len() {
+                got_sparse.push(dec.read(&sparse_cdf).unwrap());
+            }
+            assert_eq!(got_dense, dense_syms, "bits={bits}");
+            assert_eq!(got_sparse, sparse_syms, "bits={bits}");
+        }
     }
 }

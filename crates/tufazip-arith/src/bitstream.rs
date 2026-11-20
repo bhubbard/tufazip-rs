@@ -50,6 +50,7 @@ impl<R: Read> BitInputStream<R> {
     /// # Errors
     ///
     /// Returns [`ArithError::Io`] if reading from the underlying byte stream fails.
+    #[inline]
     pub fn read_bit(&mut self) -> Result<Option<u8>, ArithError> {
         let Some(mut byte) = self.current_byte else {
             return Ok(None);
@@ -152,6 +153,7 @@ impl<W: Write> BitOutputStream<W> {
     /// # Errors
     ///
     /// Returns [`ArithError::InvalidBit`] if `bit > 1`, or [`ArithError::Io`] on write failure.
+    #[inline]
     pub fn write_bit(&mut self, bit: u8) -> Result<(), ArithError> {
         if bit > 1 {
             return Err(ArithError::InvalidBit(bit));
