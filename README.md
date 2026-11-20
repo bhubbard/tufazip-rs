@@ -1,10 +1,18 @@
 # tufazip-rs
 
-Pure-Rust port of [Tufalabs/tufazip](https://github.com/Tufalabs/tufazip) (`tufazip v2`), a neural lossless data compressor and decompressor combining Fabrice Bellard's dictionary preprocessor, a Peri-RMSNorm SwiGLU Transformer with RoPE/learned-relative attention, online Adam adaptation with prefix replay, and a 32-bit resumable arithmetic coder.
+**`tufazip-rs` is a 100% lossless file compressor**—like `.zip` or `zstd`, except instead of only looking for exact repeated snippets, it uses a compact built-in AI model that learns the patterns in your file as it reads it. The better it predicts what comes next, the fewer bits it takes to store the data, and the original file is restored byte-for-byte on decompression.
+
+It is a pure-Rust port of [Tufalabs/tufazip](https://github.com/Tufalabs/tufazip) (`tufazip v2`) compiled into a single native binary with **zero Python required**, combining Fabrice Bellard's NNCP dictionary preprocessor, a Peri-RMSNorm SwiGLU Transformer with online Adam adaptation and prefix replay, and a resumable 32-bit arithmetic coder.
 
 - **GitHub Pages:** <https://code.brandonhubbard.com/tufazip-rs/>
 - **Rustdoc API Reference:** <https://code.brandonhubbard.com/tufazip-rs/api/>
 - **Benchmarks:** [`BENCHMARKS.md`](BENCHMARKS.md) &amp; [Live Benchmarks](https://code.brandonhubbard.com/tufazip-rs/#benchmarks)
+
+## Example Use Cases
+
+1. **Ultra-compact archival of large text collections:** Squeeze massive text datasets—such as books, encyclopedias, legal/research archives, source trees, or structured logs—when getting the smallest possible file size matters more than compression speed (for example, `tufazip v2` compresses the `1,000,000,000`-byte `enwik9` Wikipedia benchmark down to `105,327,486` bytes total—`0.843` bits per byte—including prior and vocabulary overhead).
+2. **Long-running compression you can pause and resume without Python setup:** Run standalone neural compression and decompression jobs from a single Rust CLI across CPU, Apple Silicon, or GPU, with atomic checkpoints (`--stop-after-blocks`) so interrupted multi-hour runs pick up right where they left off without managing Python/PyTorch environments.
+3. **Research, education, and reusable Rust compression crates:** Explore how modern language models power lossless compression (every decompression mirrors the encoder's exact training updates), or drop individual zero-`unsafe` crates—such as the cycle-safe dictionary preprocessor (`tufazip-preprocess`, 1.53&times; faster on encode than the original C tool) or 32-bit range coder (`tufazip-arith`)—into other Rust applications.
 
 ## Headline Benchmarks (Apple M3 Pro, `--release`)
 
