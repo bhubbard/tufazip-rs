@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://code.brandonhubbard.com/tufazip-rs/api/tufazip_arith/"
 description = "Reference 32-bit range arithmetic coder, bit streams, and frequency quantization for tufazip"
 
 [dependencies]

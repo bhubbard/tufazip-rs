@@ -2,6 +2,9 @@
 
 Pure-Rust port of [Tufalabs/tufazip](https://github.com/Tufalabs/tufazip) (`tufazip v2`), a neural lossless data compressor and decompressor combining Fabrice Bellard's dictionary preprocessor, a Peri-RMSNorm SwiGLU Transformer with RoPE/learned-relative attention, online Adam adaptation with prefix replay, and a 32-bit resumable arithmetic coder.
 
+- **GitHub Pages:** <https://code.brandonhubbard.com/tufazip-rs/>
+- **Rustdoc API Reference:** <https://code.brandonhubbard.com/tufazip-rs/api/>
+
 ## Workspace Layout
 
 | Crate | Purpose | Upstream Source |

@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://code.brandonhubbard.com/tufazip-rs/api/tufazip_codec/"
 description = "Neural Transformer arithmetic codec, online Adam trainer, prefix replay, and checkpointing for tufazip"
 
 [features]

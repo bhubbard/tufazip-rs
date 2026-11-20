@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://code.brandonhubbard.com/tufazip-rs/api/tufazip_preprocess/"
 description = "Pure-Rust port of Fabrice Bellard's NNCP dictionary-based text preprocessor"
 
 [dependencies]

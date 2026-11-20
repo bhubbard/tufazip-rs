@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <title>tufazip-rs | Pure-Rust Neural Lossless Compressor</title>
+  <meta
+    name="description"
+    content="Pure-Rust port of Tufalabs/tufazip (tufazip v2): NNCP dictionary preprocessor, Peri-RMSNorm SwiGLU Transformer with loop-untying prior, online Adam + prefix replay, and 32-bit resumable arithmetic coder."
+  />
+  <link rel="canonical" href="https://code.brandonhubbard.com/tufazip-rs/" />
+  <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="./styles.css" />
+  <script defer src="./app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a href="#main-heading" class="skip-link visually-hidden">Skip to main content</a>
+    <div class="topbar-inner">
+      <div class="brand">
+        <a href="https://code.brandonhubbard.com/">code.brandonhubbard.com</a>
+        <span class="brand-sep" aria-hidden="true">/</span>
+        <a href="./" aria-current="page">tufazip-rs</a>
+      </div>
+      <nav aria-label="Primary">
+        <ul class="nav-list">
+          <li><a href="#architecture">Architecture</a></li>
+          <li><a href="#crates">Crates</a></li>
+          <li><a href="#cli-builder">CLI Builder</a></li>
+          <li><a href="#assets">Assets</a></li>
+          <li><a href="#verification">Verification</a></li>
+          <li><a href="./api/tufazip_codec/index.html">API Docs</a></li>
+          <li><a href="https://github.com/bhubbard/tufazip-rs">GitHub</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="hero">
+      <div class="hero-inner">
+        <p class="kicker">Pure-Rust Port &middot; Tufalabs/tufazip v2</p>
+        <h1 id="main-heading" tabindex="-1">tufazip-rs</h1>
+        <p class="hero-lead">
+          A pure-Rust workspace porting <a href="https://github.com/Tufalabs/tufazip">Tufalabs/tufazip</a> into a memory-safe neural lossless compressor and decompressor: Fabrice Bellard&rsquo;s NNCP dictionary preprocessor, a Candle-backed Peri-RMSNorm SwiGLU Transformer initialized from quantized <code>QPI1</code> loop-untying priors, online Adam adaptation with prefix replay, and an exact 32-bit resumable arithmetic coder.
+        </p>
+
+        <ul class="metric-strip" role="list">
+          <li class="metric-card">
+            <span class="metric-value">5</span>
+            <span class="metric-label">Workspace Crates</span>
+          </li>
+          <li class="metric-card">
+            <span class="metric-value">0</span>
+            <span class="metric-label"><code>unsafe</code> Blocks (Forbidden)</span>
+          </li>
+          <li class="metric-card">
+            <span class="metric-value">43</span>
+            <span class="metric-label">Workspace Tests Passing</span>
+          </li>
+          <li class="metric-card">
+            <span class="metric-value">4.33 MB</span>
+            <span class="metric-label">Verified QPI1 Prior</span>
+          </li>
+          <li class="metric-card">
+            <span class="metric-value">162.6M</span>
+            <span class="metric-label">v2 Total Parameters</span>
+          </li>
+        </ul>
+
+        <div class="cta-row">
+          <a class="btn btn-primary" href="./api/tufazip_codec/index.html">Browse API Docs</a>
+          <a class="btn btn-secondary" href="https://github.com/bhubbard/tufazip-rs">View Repository on GitHub</a>
+        </div>
+      </div>
+    </section>
+
+    <section id="architecture" class="section">
+      <div class="section-head">
+        <h2>Compression &amp; Decompression Pipeline</h2>
+        <p>
+          Both compression and decompression run identical online training steps at every coding block so decoder logits match encoder logits without storing per-token side information beyond the binary <code>.voc</code> table and optional prior.
+        </p>
+      </div>
+
+      <figure class="diagram-figure">
+        <svg
+          class="pipeline-svg"
+          role="img"
+          viewBox="0 0 980 210"
+          aria-labelledby="pipeline-svg-title"
+        >
+          <title id="pipeline-svg-title">tufazip-rs neural lossless compression and decompression pipeline</title>
+          <defs>
+            <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 1 L 10 5 L 0 9 z" fill="currentColor" />
+            </marker>
+          </defs>
+
+          <g class="svg-stage">
+            <rect x="14" y="28" width="166" height="122" rx="4" />
+            <text x="28" y="56" class="svg-kicker">01 &middot; INPUT</text>
+            <text x="28" y="84" class="svg-title">Raw Bytes</text>
+            <text x="28" y="108" class="svg-sub">Arbitrary byte</text>
+            <text x="28" y="126" class="svg-sub">stream (e.g. text)</text>
+          </g>
+
+          <line x1="180" y1="89" x2="208" y2="89" class="svg-edge" marker-end="url(#arrow)" />
+
+          <g class="svg-stage">
+            <rect x="212" y="28" width="194" height="122" rx="4" />
+            <text x="226" y="56" class="svg-kicker">02 &middot; TUFAZIP-PREPROCESS</text>
+            <text x="226" y="84" class="svg-title">NNCP Dictionary</text>
+            <text x="226" y="108" class="svg-sub">Case/space escape +</text>
+            <text x="226" y="126" class="svg-sub">.voc / .pp u16 tokens</text>
+          </g>
+
+          <line x1="406" y1="89" x2="434" y2="89" class="svg-edge" marker-end="url(#arrow)" />
+
+          <g class="svg-stage svg-stage-accent">
+            <rect x="438" y="16" width="290" height="146" rx="4" />
+            <text x="454" y="46" class="svg-kicker">03 &middot; TUFAZIP-CODEC + PRIOR</text>
+            <text x="454" y="76" class="svg-title">Transformer + Online Adam</text>
+            <text x="454" y="100" class="svg-sub">Peri-RMSNorm &middot; SwiGLU &middot; RoPE</text>
+            <text x="454" y="119" class="svg-sub">QPI1 loop-untying initialization</text>
+            <text x="454" y="138" class="svg-sub">Prefix replay + safetensors ckpt</text>
+          </g>
+
+          <line x1="728" y1="89" x2="756" y2="89" class="svg-edge" marker-end="url(#arrow)" />
+
+          <g class="svg-stage">
+            <rect x="760" y="28" width="206" height="122" rx="4" />
+            <text x="774" y="56" class="svg-kicker">04 &middot; TUFAZIP-ARITH</text>
+            <text x="774" y="84" class="svg-title">32-bit Range Coder</text>
+            <text x="774" y="108" class="svg-sub">Softmax-to-CDF (10M)</text>
+            <text x="774" y="126" class="svg-sub">Exact bitstream + resume</text>
+          </g>
+
+          <text x="490" y="192" text-anchor="middle" class="svg-caption">
+            Lossless invertibility: Decompression mirrors steps 03 &rarr; 04 (bitstream &rarr; .pp tokens) and 02 (tokens &rarr; exact raw bytes)
+          </text>
+        </svg>
+        <figcaption>
+          Four-stage lossless neural coding architecture implemented with zero <code>unsafe</code> Rust across five focused crates.
+        </figcaption>
+      </figure>
+
+      <ol class="step-list" role="list">
+        <li>
+          <h3>1. NNCP Dictionary Preprocessing (<code>tufazip-preprocess</code>)</h3>
+          <p>
+            Pure-Rust port of Fabrice Bellard&rsquo;s <code>preprocess.c</code> encoding Unicode whitespace/capitalization escapes and inducing up to 65,536 bigram dictionary tokens (<code>.voc</code> + big-endian <code>u16</code> <code>.pp</code> streams).
+          </p>
+        </li>
+        <li>
+          <h3>2. Quantized Prior Loading (<code>tufazip-prior</code>)</h3>
+          <p>
+            Parses and verifies <code>QPI1</code>, <code>QPR1</code>, <code>LRA1</code>, and <code>QLA1</code> weight archives at <code>1/2/4/8/16</code>-bit widths, expanding 2-layer loop-untying or depth-growth priors into 12-layer targets without wasting PRNG draws.
+          </p>
+        </li>
+        <li>
+          <h3>3. Neural Context Modeling &amp; Online Adaptation (<code>tufazip-codec</code>)</h3>
+          <p>
+            Runs a Candle-backed Transformer (Peri/Post RMSNorm, RoPE or learned-relative attention, QK-Norm, SwiGLU) updated online with deterministic Adam, gradient norm clipping, prefix replay, and atomic <code>safetensors</code> + JSON checkpoints.
+          </p>
+        </li>
+        <li>
+          <h3>4. 32-bit Arithmetic Coding (<code>tufazip-arith</code>)</h3>
+          <p>
+            Converts logits to deterministic integer cumulative frequencies (<code>FREQ_TOTAL = 10,000,000</code>, round-half-to-even) and writes or decodes resumable big-endian bitstreams with byte-exact checkpoint restoration.
+          </p>
+        </li>
+      </ol>
+    </section>
+
+    <section id="crates" class="section">
+      <div class="section-head">
+        <h2>Workspace Crates &amp; Rustdoc API</h2>
+        <p>
+          Every workspace library crate compiles cleanly under <code>RUSTDOCFLAGS="-D warnings"</code> and forbids <code>unsafe_code</code> at the workspace level.
+        </p>
+      </div>
+
+      <div tabindex="0" role="region" aria-labelledby="crates-caption" class="table-wrapper">
+        <table class="crates-table">
+          <caption id="crates-caption" class="visually-hidden">
+            Workspace crates, architectural responsibilities, upstream C/Python equivalents, and API documentation links
+          </caption>
+          <thead>
+            <tr>
+              <th scope="col">Crate</th>
+              <th scope="col">Purpose</th>
+              <th scope="col">Upstream Mapping</th>
+              <th scope="col">API Reference</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row"><code>tufazip-arith</code></th>
+              <td>32-bit range encoder/decoder, big-endian checkpointed bit streams, and <code>FREQ_TOTAL</code> CDF table builder</td>
+              <td><code>arithmetic_coder.py</code>, <code>make_freq_table</code></td>
+              <td>
+                <a href="./api/tufazip_arith/index.html">
+                  Docs <span class="visually-hidden">for tufazip-arith</span>
+                </a>
+              </td>
+            </tr>
+            <tr>
+              <th scope="row"><code>tufazip-preprocess</code></th>
+              <td>Case/space reversible transform, iterative bigram induction, and streaming <code>.voc</code>/<code>.pp</code> codec</td>
+              <td><code>preprocess.c</code> (Bellard NNCP)</td>
+              <td>
+                <a href="./api/tufazip_preprocess/index.html">
+                  Docs <span class="visually-hidden">for tufazip-preprocess</span>
+                </a>
+              </td>
+            </tr>
+            <tr>
+              <th scope="row"><code>tufazip-prior</code></th>
+              <td>Binary <code>QPI1</code>/<code>QPR1</code>/<code>LRA1</code>/<code>QLA1</code> reader/writer and loop-untying / depth-growth planner</td>
+              <td><code>read_tensor_archive</code>, <code>load_depth_prior</code></td>
+              <td>
+                <a href="./api/tufazip_prior/index.html">
+                  Docs <span class="visually-hidden">for tufazip-prior</span>
+                </a>
+              </td>
+            </tr>
+            <tr>
+              <th scope="row"><code>tufazip-codec</code></th>
+              <td>Candle 0.11 Transformer, online Adam + prefix replay, ChaCha8 RNG, and atomic checkpoint resume</td>
+              <td><code>nn.py</code>, <code>checkpoint_utils.py</code></td>
+              <td>
+                <a href="./api/tufazip_codec/index.html">
+                  Docs <span class="visually-hidden">for tufazip-codec</span>
+                </a>
+              </td>
+            </tr>
+            <tr>
+              <th scope="row"><code>tufazip-cli</code></th>
+              <td>Unified <code>tufazip</code> binary (<code>compress</code>, <code>decompress</code>, <code>codec</code>, <code>preprocess</code>, <code>v2-decode</code>, <code>inspect-prior</code>)</td>
+              <td><code>tufazip</code>, <code>nn.py</code>, <code>preprocess.c</code></td>
+              <td>
+                <a href="./api/tufazip/index.html">
+                  Docs <span class="visually-hidden">for tufazip-cli binary</span>
+                </a>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="cli-builder" class="section">
+      <div class="section-head">
+        <h2>Interactive CLI Command Builder</h2>
+        <p>
+          Configure subcommand, Candle compute backend feature flag, model preset, and build profile to generate the exact <code>cargo run</code> invocation.
+        </p>
+      </div>
+
+      <div class="workbench">
+        <form class="controls-panel" aria-label="CLI command options">
+          <div class="control-group">
+            <label for="cli-mode">Subcommand</label>
+            <span id="cli-mode-hint" class="field-hint">
+              Select an end-to-end, codec-only, preprocessing, prior inspection, or v2 verification workflow.
+            </span>
+            <select id="cli-mode" aria-describedby="cli-mode-hint">
+              <option value="compress">compress &mdash; raw file &rarr; archive (.voc + neural bitstream)</option>
+              <option value="decompress">decompress &mdash; archive + .voc &rarr; exact raw file</option>
+              <option value="codec-compress">codec &mdash; pre-tokenized .pp &rarr; bitstream</option>
+              <option value="codec-decompress">codec --decompress &mdash; bitstream &rarr; .pp tokens</option>
+              <option value="preprocess-encode">preprocess encode &mdash; induce .voc and .pp tokens</option>
+              <option value="preprocess-decode">preprocess decode &mdash; decode .pp tokens to raw bytes</option>
+              <option value="inspect-prior">inspect-prior &mdash; inspect QPI1 weights.bin &amp; SHA-256</option>
+              <option value="v2-decode">v2-decode &mdash; verify &amp; decode enwik9-v2.bin artifact</option>
+            </select>
+          </div>
+
+          <div class="control-group">
+            <label for="cli-backend">Candle Compute Backend</label>
+            <span id="cli-backend-hint" class="field-hint">
+              Select optional Cargo feature flags and device flags matched to your hardware.
+            </span>
+            <select id="cli-backend" aria-describedby="cli-backend-hint">
+              <option value="cpu">Pure-Rust CPU (default)</option>
+              <option value="accelerate">Apple Silicon Accelerate BLAS (--features tufazip-codec/accelerate)</option>
+              <option value="metal">Apple Silicon Metal GPU (--features tufazip-codec/metal)</option>
+              <option value="cuda">NVIDIA CUDA (--features tufazip-codec/cuda)</option>
+              <option value="mkl">Intel oneMKL (--features tufazip-codec/mkl)</option>
+            </select>
+          </div>
+
+          <div class="control-group">
+            <label for="cli-preset">Model Preset</label>
+            <span id="cli-preset-hint" class="field-hint">
+              <code>tiny</code> runs fast locally; <code>v2</code> sets full 12-layer enwik9 geometry.
+            </span>
+            <select id="cli-preset" aria-describedby="cli-preset-hint">
+              <option value="tiny">tiny &mdash; fast local compression &amp; testing</option>
+              <option value="v2">v2 &mdash; full 12-layer Transformer (d_model=768, d_inner=3072)</option>
+            </select>
+          </div>
+
+          <div class="control-group control-checkbox">
+            <label for="cli-release" class="checkbox-label">
+              <input id="cli-release" type="checkbox" checked aria-describedby="cli-release-hint" />
+              <span>Compile with <code>--release</code> (recommended for neural throughput)</span>
+            </label>
+            <span id="cli-release-hint" class="field-hint">
+              Enables thin LTO and single-codegen-unit release optimization configured in root <code>Cargo.toml</code>.
+            </span>
+          </div>
+        </form>
+
+        <div class="output-panel">
+          <div class="code-header">
+            <span class="code-label">Generated Invocation</span>
+            <button type="button" id="copy-cli-btn" class="btn btn-small">
+              Copy <span class="visually-hidden">generated CLI command</span>
+            </button>
+          </div>
+          <pre tabindex="0"><code id="cli-output">cargo run --release --bin tufazip -- compress input.txt archive.tz --vocab out.voc --preset tiny --device cpu</code></pre>
+          <p id="cli-note" class="output-note">
+            End-to-end compression induces a vocabulary into <code>out.voc</code>, tokenizes <code>input.txt</code>, and writes the arithmetic-coded artifact.
+          </p>
+        </div>
+      </div>
+
+      <div class="snippet-grid">
+        <article class="snippet-card">
+          <div class="code-header">
+            <h3>Build Release Binary</h3>
+            <button type="button" class="btn btn-small copy-snippet-btn" data-copy-target="snippet-build">
+              Copy <span class="visually-hidden">release build commands</span>
+            </button>
+          </div>
+          <pre tabindex="0"><code id="snippet-build">git clone https://github.com/bhubbard/tufazip-rs.git
+cd tufazip-rs
+cargo build --release --bin tufazip</code></pre>
+        </article>
+
+        <article class="snippet-card">
+          <div class="code-header">
+            <h3>Run Workspace Checks</h3>
+            <button type="button" class="btn btn-small copy-snippet-btn" data-copy-target="snippet-verify">
+              Copy <span class="visually-hidden">verification commands</span>
+            </button>
+          </div>
+          <pre tabindex="0"><code id="snippet-verify">cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+make pages</code></pre>
+        </article>
+      </div>
+    </section>
+
+    <section id="assets" class="section">
+      <div class="section-head">
+        <h2>Verified Upstream Assets &amp; Determinism</h2>
+        <p>
+          Repository <code>assets/</code> includes the bit-identical dictionary and quantized prior distributed by <code>Tufalabs/tufazip</code>.
+        </p>
+      </div>
+
+      <div tabindex="0" role="region" aria-labelledby="assets-caption" class="table-wrapper">
+        <table class="assets-table">
+          <caption id="assets-caption" class="visually-hidden">
+            Verified upstream binary assets, exact byte sizes, SHA-256 checksums, and inspected v2 structure
+          </caption>
+          <thead>
+            <tr>
+              <th scope="col">Artifact</th>
+              <th scope="col">Size</th>
+              <th scope="col">SHA-256 Digest</th>
+              <th scope="col">Structure &amp; Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row"><code>assets/enwik9.voc</code></th>
+              <td>34,421 B</td>
+              <td class="hash"><code>a63e517783e84a778f3f08c1f2321f3e2035e64d34c8e9206f03591460e44629</code></td>
+              <td>NNCP dictionary mapping 256 byte bases + learned bigrams for <code>enwik9</code> tokenization</td>
+            </tr>
+            <tr>
+              <th scope="row"><code>assets/weights.bin</code></th>
+              <td>4,334,741 B</td>
+              <td class="hash"><code>e94c089f8eb985a87307dca3a7702385fcaccd14d95743811f8788f7da24448d</code></td>
+              <td><code>QPI1</code> loop-untying prior (2 &rarr; 12 layers via schedule <code>[0,1]&times;6</code>, 26 tensors, 162,585,600 total params / 154,194,944 non-embedding)</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <aside class="callout" aria-label="Hardware determinism note">
+        <h3>Cross-Hardware Determinism Note</h3>
+        <p>
+          <code>tufazip-rs</code> provides bit-exact self-consistent compression, decompression, and checkpoint resume using fixed <code>ChaCha8Rng</code> PRNG streams, <code>safetensors</code> + JSON state snapshots, and integer frequency tables. Upstream&rsquo;s precomputed <code>enwik9-v2.bin</code> (100,958,324 bytes) depends on a pinned 2&times; NVIDIA B200 CUDA 13.0 / cuDNN 9.20 BF16 FlashAttention + NCCL DDP reduction trajectory; pass <code>--skip-verify</code> to <code>v2-decode</code> when testing on other hardware.
+        </p>
+      </aside>
+    </section>
+
+    <section id="verification" class="section">
+      <div class="section-head">
+        <h2>Differential &amp; Regression Test Suite</h2>
+        <p>
+          In addition to unit roundtrips, <code>tufazip-rs</code> includes ports of Project Nayuki&rsquo;s reference arithmetic coding suite and a live C differential harness compiled against unmodified upstream <code>preprocess.c</code>.
+        </p>
+      </div>
+
+      <div tabindex="0" role="region" aria-labelledby="tests-caption" class="table-wrapper">
+        <table class="tests-table">
+          <caption id="tests-caption" class="visually-hidden">
+            Verification coverage across all five workspace crates
+          </caption>
+          <thead>
+            <tr>
+              <th scope="col">Crate</th>
+              <th scope="col">Harness / Suite</th>
+              <th scope="col">What It Verifies</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row"><code>tufazip-arith</code></th>
+              <td>Nayuki Reference Tests</td>
+              <td>Ports Project Nayuki&rsquo;s <code>ArithmeticCodingTest</code>, <code>ArithmeticCompressTest</code>, and <code>AdaptiveArithmeticCompressTest</code> (empty, single-symbol, underflow, 1,000 random distributions) plus EOF and 16/24/32/48-bit state sweeps</td>
+            </tr>
+            <tr>
+              <th scope="row"><code>tufazip-preprocess</code></th>
+              <td>Live C Differential Harness</td>
+              <td>Compiles unmodified upstream <code>preprocess.c</code> via <code>cc</code> and checks byte-for-byte identical <code>.voc</code>/<code>.pp</code> outputs, bidirectional C&#8651;Rust decoding, <code>-s</code> sorted dictionaries, and <code>assets/enwik9.voc</code> parity</td>
+            </tr>
+            <tr>
+              <th scope="row"><code>tufazip-prior</code></th>
+              <td>Binary Validation Matrix</td>
+              <td>Roundtrips <code>1/2/4/8/16</code>-bit <code>QPI1</code>/<code>QPR1</code>/<code>LRA1</code>/<code>QLA1</code> archives, validates <code>depth-growth</code> and <code>loop-untying</code> schedules, and rejects malformed headers, shapes, and trailing bytes</td>
+            </tr>
+            <tr>
+              <th scope="row"><code>tufazip-codec</code></th>
+              <td>Model &amp; Checkpoint Edge Cases</td>
+              <td>Verifies <code>Transformer::from_prior</code> real <code>weights.bin</code> forward pass, <code>PiecewiseLrSchedule</code>, <code>LearnedRelative</code> + <code>Post</code> norms, pause/resume flags, checkpoint corruption checks, and zero-token streams</td>
+            </tr>
+            <tr>
+              <th scope="row"><code>tufazip-cli</code></th>
+              <td>CLI Integration Roundtrips</td>
+              <td>Exercises end-to-end <code>compress</code>/<code>decompress</code>, <code>preprocess</code>, <code>inspect-prior --json</code>, error paths, and <code>--stop-after-blocks 1</code> exit code <code>75</code> checkpoint requeue &amp; resume</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      <p>
+        MIT License &middot; Pure-Rust port of <a href="https://github.com/Tufalabs/tufazip">Tufalabs/tufazip</a> with attributions to Fabrice Bellard (NNCP) and Project Nayuki (see <a href="https://github.com/bhubbard/tufazip-rs/blob/main/NOTICE">NOTICE</a>).
+      </p>
+      <ul class="footer-links" role="list">
+        <li><a href="./api/tufazip_codec/index.html">API Docs</a></li>
+        <li><a href="https://github.com/bhubbard/tufazip-rs">GitHub</a></li>
+        <li><a href="https://code.brandonhubbard.com/">Portfolio</a></li>
+      </ul>
+    </div>
+  </footer>
+
+  <div id="live-status" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
+</body>
+</html>

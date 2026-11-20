@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <title>tufazip-rs</title>
+  <rect width="32" height="32" rx="4" fill="#0A0A0C" />
+  <rect x="1.5" y="1.5" width="29" height="29" rx="2.5" fill="none" stroke="#22242A" stroke-width="1" />
+  <path d="M7 9l6 7-6 7" fill="none" stroke="#F59E0B" stroke-width="2.5" stroke-linecap="square" />
+  <path d="M25 9l-6 7 6 7" fill="none" stroke="#00F0FF" stroke-width="2.5" stroke-linecap="square" />
+  <rect x="14.5" y="14.5" width="3" height="3" fill="#F4F4F6" />
+</svg>

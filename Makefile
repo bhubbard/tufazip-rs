@@ -1,4 +1,4 @@
-.PHONY: check test clippy fmt doc release
+.PHONY: check test clippy fmt doc pages release
 
 check:
 	cargo check --workspace --all-targets
@@ -14,6 +14,15 @@ fmt:
 
 doc:
 	cargo doc --workspace --no-deps
+
+pages:
+	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+	rm -rf _site
+	mkdir -p _site/api
+	cp -R docs/. _site/
+	cp -R target/doc/. _site/api/
+	rm -f _site/api/.lock
+	touch _site/.nojekyll
 
 release:
 	cargo build --release --bin tufazip

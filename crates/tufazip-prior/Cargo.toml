@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://code.brandonhubbard.com/tufazip-rs/api/tufazip_prior/"
 description = "Reader, writer, and depth/loop prior validator for tufazip quantized weight archives (QPI1/QPR1/LRA1/QLA1)"
 
 [dependencies]
