@@ -1,4 +1,4 @@
-.PHONY: check test clippy fmt doc pages release
+.PHONY: check test clippy fmt doc pages bench release
 
 check:
 	cargo check --workspace --all-targets
@@ -23,6 +23,9 @@ pages:
 	cp -R target/doc/. _site/api/
 	rm -f _site/api/.lock
 	touch _site/.nojekyll
+
+bench:
+	cargo run --release --example benchmark -- --backend cpu
 
 release:
 	cargo build --release --bin tufazip

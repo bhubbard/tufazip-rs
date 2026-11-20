@@ -4,6 +4,15 @@ Pure-Rust port of [Tufalabs/tufazip](https://github.com/Tufalabs/tufazip) (`tufa
 
 - **GitHub Pages:** <https://code.brandonhubbard.com/tufazip-rs/>
 - **Rustdoc API Reference:** <https://code.brandonhubbard.com/tufazip-rs/api/>
+- **Benchmarks:** [`BENCHMARKS.md`](BENCHMARKS.md) &amp; [Live Benchmarks](https://code.brandonhubbard.com/tufazip-rs/#benchmarks)
+
+## Headline Benchmarks (Apple M3 Pro, `--release`)
+
+- **`tufazip-arith`:** **47,024 tables/s** (`4,097`-symbol `make_freq_table_into`), **25.68 Msym/s** encode, **11.06 Msym/s** decode.
+- **`tufazip-preprocess` vs `preprocess.c` (`cc -O2`):** Pure-Rust streaming decode runs at **107.93 MiB/s** (**7.45&times;** faster than the C CLI), while dictionary induction runs at **1.36 MiB/s** with cycle-detection hardening against upstream `preprocess.c` oscillation.
+- **`tufazip-codec` Neural Backends:** **Apple Accelerate BLAS** delivers **2.12&times;** (`524.8 tok/s` vs `248.0 tok/s`) on online `4L/256d` coding; **Apple Metal GPU** delivers **8.04&times;** (`54.90 ms` vs `441.52 ms` on CPU) on the full **`v2` 12-layer 162.6M-parameter** forward pass.
+
+See [`BENCHMARKS.md`](BENCHMARKS.md) for full methodology, all 5 tracks, compression ratio (`bpb`) comparison, and reproduction commands.
 
 ## Workspace Layout
 

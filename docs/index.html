@@ -35,6 +35,7 @@
           <li><a href="#crates">Crates</a></li>
           <li><a href="#cli-builder">CLI Builder</a></li>
           <li><a href="#assets">Assets</a></li>
+          <li><a href="#benchmarks">Benchmarks</a></li>
           <li><a href="#verification">Verification</a></li>
           <li><a href="./api/tufazip_codec/index.html">API Docs</a></li>
           <li><a href="https://github.com/bhubbard/tufazip-rs">GitHub</a></li>
@@ -62,7 +63,7 @@
             <span class="metric-label"><code>unsafe</code> Blocks (Forbidden)</span>
           </li>
           <li class="metric-card">
-            <span class="metric-value">43</span>
+            <span class="metric-value">44</span>
             <span class="metric-label">Workspace Tests Passing</span>
           </li>
           <li class="metric-card">
@@ -305,7 +306,7 @@
             </span>
             <select id="cli-preset" aria-describedby="cli-preset-hint">
               <option value="tiny">tiny &mdash; fast local compression &amp; testing</option>
-              <option value="v2">v2 &mdash; full 12-layer Transformer (d_model=768, d_inner=3072)</option>
+              <option value="v2">v2 &mdash; full 12-layer Transformer (d_model=1024, d_inner=2816, ctx_len=192)</option>
             </select>
           </div>
 
@@ -404,6 +405,247 @@ make pages</code></pre>
         <h3>Cross-Hardware Determinism Note</h3>
         <p>
           <code>tufazip-rs</code> provides bit-exact self-consistent compression, decompression, and checkpoint resume using fixed <code>ChaCha8Rng</code> PRNG streams, <code>safetensors</code> + JSON state snapshots, and integer frequency tables. Upstream&rsquo;s precomputed <code>enwik9-v2.bin</code> (100,958,324 bytes) depends on a pinned 2&times; NVIDIA B200 CUDA 13.0 / cuDNN 9.20 BF16 FlashAttention + NCCL DDP reduction trajectory; pass <code>--skip-verify</code> to <code>v2-decode</code> when testing on other hardware.
+        </p>
+      </aside>
+    </section>
+
+    <section id="benchmarks" class="section">
+      <div class="section-head">
+        <h2>Measured Benchmarks (Apple M3 Pro &middot; Release)</h2>
+        <p>
+          Measured with <a href="https://github.com/bhubbard/tufazip-rs/blob/main/crates/tufazip-cli/examples/benchmark.rs"><code>examples/benchmark.rs</code></a> on Apple M3 Pro (11-core, 18 GiB, macOS 27.2.1, <code>rustc 1.100.0</code>, release LTO) over the deterministic 21-file in-repo source corpus (<code>266,014 B</code>, SHA-256 <code>15591fb8...b92aed2</code>). See full methodology in <a href="https://github.com/bhubbard/tufazip-rs/blob/main/BENCHMARKS.md"><code>BENCHMARKS.md</code></a>.
+        </p>
+      </div>
+
+      <h3 class="subhead">Core Primitives &amp; C Differential Parity</h3>
+      <div tabindex="0" role="region" aria-labelledby="bench-core-caption" class="table-wrapper bench-gap">
+        <table class="bench-core-table">
+          <caption id="bench-core-caption" class="visually-hidden">
+            Arithmetic coder, NNCP preprocessor Rust vs C reference, and quantized prior loading benchmarks
+          </caption>
+          <thead>
+            <tr>
+              <th scope="col">Benchmark</th>
+              <th scope="col">Measured Time</th>
+              <th scope="col">Throughput</th>
+              <th scope="col">Parity &amp; Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row"><code>tufazip-arith</code> CDF Table</th>
+              <td>425.32 ms (20k tables)</td>
+              <td>47,024 tables/s</td>
+              <td>4,097-symbol softmax &rarr; integer CDF (<code>FREQ_TOTAL=10M</code>)</td>
+            </tr>
+            <tr>
+              <th scope="row"><code>tufazip-arith</code> Encode</th>
+              <td>19.47 ms (500k sym)</td>
+              <td>25.68 Msym/s</td>
+              <td>954,384 B output; exact 32-bit range stream</td>
+            </tr>
+            <tr>
+              <th scope="row"><code>tufazip-arith</code> Decode</th>
+              <td>45.21 ms (500k sym)</td>
+              <td>11.06 Msym/s</td>
+              <td>500,000 / 500,000 symbols lossless verified</td>
+            </tr>
+            <tr>
+              <th scope="row"><code>preprocess</code> Encode (Rust)</th>
+              <td>187.17 ms</td>
+              <td>1.36 MiB/s</td>
+              <td><code>max_words=1500</code>; cycle-safe against upstream loop</td>
+            </tr>
+            <tr>
+              <th scope="row"><code>preprocess.c</code> Encode (Clang <code>-O2</code>)</th>
+              <td>99.65 ms</td>
+              <td>2.55 MiB/s</td>
+              <td>Identical 10,573 B <code>.voc</code> / 261,716 B <code>.pp</code> sizes</td>
+            </tr>
+            <tr>
+              <th scope="row"><code>preprocess</code> Decode (Rust)</th>
+              <td>2.35 ms</td>
+              <td>107.93 MiB/s</td>
+              <td>7.45&times; faster than C CLI (17.51 ms); bidirectional C&#8651;Rust verified</td>
+            </tr>
+            <tr>
+              <th scope="row"><code>tufazip-prior</code> <code>read_archive</code></th>
+              <td>89.88 ms</td>
+              <td>1,447 MiB/s <code>f32</code></td>
+              <td>4.33 MB <code>weights.bin</code> (26 tensors &rarr; 130 MiB <code>f32</code>)</td>
+            </tr>
+            <tr>
+              <th scope="row"><code>Transformer::from_prior</code> (<code>v2</code>)</th>
+              <td>2,574.41 ms</td>
+              <td>63.2M params/s</td>
+              <td>Expands 2 &rarr; 12 layers (162,585,600 params)</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3 class="subhead">Neural Backend Scaling (CPU vs Accelerate vs Metal)</h3>
+      <div tabindex="0" role="region" aria-labelledby="bench-backends-caption" class="table-wrapper bench-gap">
+        <table class="bench-backends-table">
+          <caption id="bench-backends-caption" class="visually-hidden">
+            Throughput comparison across pure-Rust CPU, Apple Accelerate BLAS, and Apple Metal GPU backends
+          </caption>
+          <thead>
+            <tr>
+              <th scope="col">Neural Workload</th>
+              <th scope="col">Pure-Rust CPU</th>
+              <th scope="col">Apple Accelerate BLAS</th>
+              <th scope="col">Apple Metal GPU</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row">Online <code>tiny</code> Compress (1,024 tok)</th>
+              <td>
+                0.565 s (1,813.7 tok/s)
+                <div class="bar-track" aria-hidden="true"><div class="bar-fill" style="--pct: 71%"></div></div>
+              </td>
+              <td>
+                <strong>0.401 s (2,554.7 tok/s &middot; 1.41&times;)</strong>
+                <div class="bar-track" aria-hidden="true"><div class="bar-fill bar-fill-accent" style="--pct: 100%"></div></div>
+              </td>
+              <td>
+                21.000 s (48.8 tok/s &middot; cold JIT)
+                <div class="bar-track" aria-hidden="true"><div class="bar-fill" style="--pct: 2%"></div></div>
+              </td>
+            </tr>
+            <tr>
+              <th scope="row">Online <code>tiny</code> Decompress (1,024 tok)</th>
+              <td>
+                0.578 s (1,772.6 tok/s)
+                <div class="bar-track" aria-hidden="true"><div class="bar-fill" style="--pct: 72%"></div></div>
+              </td>
+              <td>
+                <strong>0.416 s (2,461.8 tok/s &middot; 1.39&times;)</strong>
+                <div class="bar-track" aria-hidden="true"><div class="bar-fill bar-fill-accent" style="--pct: 100%"></div></div>
+              </td>
+              <td>
+                7.161 s (143.0 tok/s &middot; per-step sync)
+                <div class="bar-track" aria-hidden="true"><div class="bar-fill" style="--pct: 6%"></div></div>
+              </td>
+            </tr>
+            <tr>
+              <th scope="row">Online <code>medium</code> 4L/256d Compress</th>
+              <td>
+                4.129 s (248.0 tok/s)
+                <div class="bar-track" aria-hidden="true"><div class="bar-fill" style="--pct: 47%"></div></div>
+              </td>
+              <td>
+                <strong>1.951 s (524.8 tok/s &middot; 2.12&times;)</strong>
+                <div class="bar-track" aria-hidden="true"><div class="bar-fill bar-fill-accent" style="--pct: 100%"></div></div>
+              </td>
+              <td>
+                4.731 s (216.4 tok/s &middot; per-step sync)
+                <div class="bar-track" aria-hidden="true"><div class="bar-fill" style="--pct: 41%"></div></div>
+              </td>
+            </tr>
+            <tr>
+              <th scope="row"><code>v2</code> 12L 162.6M Fwd (<code>F32</code>, b=1&times;192)</th>
+              <td>
+                441.52 ms (434.9 tok/s)
+                <div class="bar-track" aria-hidden="true"><div class="bar-fill" style="--pct: 12%"></div></div>
+              </td>
+              <td>
+                157.89 ms (1,216.0 tok/s &middot; 2.80&times;)
+                <div class="bar-track" aria-hidden="true"><div class="bar-fill" style="--pct: 35%"></div></div>
+              </td>
+              <td>
+                <strong>54.90 ms (3,497.4 tok/s &middot; 8.04&times;)</strong>
+                <div class="bar-track" aria-hidden="true"><div class="bar-fill bar-fill-accent" style="--pct: 100%"></div></div>
+              </td>
+            </tr>
+            <tr>
+              <th scope="row"><code>v2</code> 12L 162.6M Fwd (<code>BF16</code>, b=1&times;192)</th>
+              <td>&mdash;</td>
+              <td>&mdash;</td>
+              <td>
+                <strong>61.59 ms (3,117.4 tok/s &middot; 7.17&times;)</strong>
+                <div class="bar-track" aria-hidden="true"><div class="bar-fill bar-fill-accent" style="--pct: 89%"></div></div>
+              </td>
+            </tr>
+            <tr>
+              <th scope="row"><code>v2</code> 12L 162.6M Fwd (<code>F32</code>, b=4&times;192)</th>
+              <td>
+                1,623.47 ms (473.1 tok/s)
+                <div class="bar-track" aria-hidden="true"><div class="bar-fill" style="--pct: 17%"></div></div>
+              </td>
+              <td>
+                1,094.22 ms (701.9 tok/s &middot; 1.48&times;)
+                <div class="bar-track" aria-hidden="true"><div class="bar-fill" style="--pct: 25%"></div></div>
+              </td>
+              <td>
+                <strong>268.92 ms (2,855.8 tok/s &middot; 6.04&times;)</strong>
+                <div class="bar-track" aria-hidden="true"><div class="bar-fill bar-fill-accent" style="--pct: 100%"></div></div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3 class="subhead">Lossless Compression Ratio (<code>16,384 B</code> Rust Source Prefix)</h3>
+      <div tabindex="0" role="region" aria-labelledby="bench-ratio-caption" class="table-wrapper">
+        <table class="bench-ratio-table">
+          <caption id="bench-ratio-caption" class="visually-hidden">
+            Lossless compression ratio in bits per byte compared against standard compressors on 16,384 bytes
+          </caption>
+          <thead>
+            <tr>
+              <th scope="col">Compressor</th>
+              <th scope="col">Payload Bytes (<code>bpb</code>)</th>
+              <th scope="col">Total Archive (<code>bpb</code>)</th>
+              <th scope="col">Time &amp; Verification</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row"><code>zstd -19</code></th>
+              <td>3,524 B (1.721 bpb)</td>
+              <td>3,524 B (1.721 bpb)</td>
+              <td>0.028 s &middot; SHA-256 verified</td>
+            </tr>
+            <tr>
+              <th scope="row"><code>bzip2 -9</code></th>
+              <td>3,576 B (1.746 bpb)</td>
+              <td>3,576 B (1.746 bpb)</td>
+              <td>0.013 s &middot; SHA-256 verified</td>
+            </tr>
+            <tr>
+              <th scope="row"><code>xz -9</code></th>
+              <td>3,608 B (1.762 bpb)</td>
+              <td>3,608 B (1.762 bpb)</td>
+              <td>0.015 s &middot; SHA-256 verified</td>
+            </tr>
+            <tr>
+              <th scope="row"><code>gzip -9</code></th>
+              <td>3,614 B (1.765 bpb)</td>
+              <td>3,614 B (1.765 bpb)</td>
+              <td>0.009 s &middot; SHA-256 verified</td>
+            </tr>
+            <tr>
+              <th scope="row"><code>tufazip-rs</code> (<code>medium 4L</code>, cold-start)</th>
+              <td>3,995 B (1.951 bpb)</td>
+              <td>7,267 B (+3,272 B <code>.voc</code>, 3.548 bpb)</td>
+              <td>6.424 s &middot; SHA-256 verified</td>
+            </tr>
+            <tr>
+              <th scope="row"><code>tufazip-rs</code> (<code>tiny</code>, cold-start)</th>
+              <td>4,077 B (1.991 bpb)</td>
+              <td>7,349 B (+3,272 B <code>.voc</code>, 3.588 bpb)</td>
+              <td>2.103 s &middot; SHA-256 verified</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <aside class="callout" aria-label="Upstream reference scale benchmark">
+        <h3>Scale Context &amp; Upstream <code>enwik9</code> Reference</h3>
+        <p>
+          On a 16 KiB cold-start sample, fixed dictionary metadata (<code>3,272 B</code> <code>.voc</code>) and random initialization do not amortize. At full <code>enwik9</code> scale (<code>1,000,000,000 B</code>) with the pretrained <code>assets/weights.bin</code> prior (<code>4.33 MB</code>) and <code>assets/enwik9.voc</code> (<code>34.4 KB</code>) on 2&times; NVIDIA B200, upstream <code>tufazip v2</code> compresses to <code>100,958,324 B</code> payload (<strong>0.808 payload bpb</strong> / <strong>0.843 total bpb</strong>).
         </p>
       </aside>
     </section>

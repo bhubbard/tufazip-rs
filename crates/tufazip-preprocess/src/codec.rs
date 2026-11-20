@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
@@ -353,6 +353,15 @@ fn emit_token_ids(
     }
 }
 
+fn fnv1a_u16(slice: &[u16]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for &v in slice {
+        hash ^= u64::from(v);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    hash
+}
+
 /// Runs Fabrice Bellard's bigram dictionary induction and encodes `input` into token IDs.
 ///
 /// # Errors
@@ -376,6 +385,8 @@ pub fn encode_bytes(
     let max_learned = config.max_words - NS;
     let mut word_count = 0usize;
     let mut entropy_bits = compute_entropy(&s, &char_freq, buf.len());
+    let mut seen_states = HashSet::new();
+    seen_states.insert((s.words.len(), word_count, buf.len(), fnv1a_u16(&buf)));
 
     while word_count < max_learned {
         if buf.len() < 2 {
@@ -416,7 +427,9 @@ pub fn encode_bytes(
         let word_count_prev = word_count;
         word_count = update_word_freq(&mut s, &mut char_freq, &mut buf, config.min_freq);
         entropy_bits = compute_entropy(&s, &char_freq, buf.len());
-        if word_count >= max_learned || word_count == word_count_prev {
+        let state = (s.words.len(), word_count, buf.len(), fnv1a_u16(&buf));
+        if word_count >= max_learned || word_count == word_count_prev || !seen_states.insert(state)
+        {
             break;
         }
     }
@@ -750,5 +763,47 @@ mod tests {
             decode_file(&pp_path, &out_path, &voc_path),
             Err(PreprocessError::OddTokenStreamLength(3))
         ));
+    }
+
+    #[test]
+    fn encode_terminates_on_oscillating_merge_cycle() {
+        let crates_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let mut rs_paths = Vec::new();
+        for entry in std::fs::read_dir(&crates_dir).unwrap() {
+            let src_dir = entry.unwrap().path().join("src");
+            if src_dir.is_dir() {
+                for src_entry in std::fs::read_dir(src_dir).unwrap() {
+                    let p = src_entry.unwrap().path();
+                    if p.extension().and_then(|s| s.to_str()) == Some("rs") {
+                        rs_paths.push(p);
+                    }
+                }
+            }
+        }
+        rs_paths.sort();
+        let mut corpus = Vec::new();
+        for (idx, p) in rs_paths.iter().enumerate() {
+            if idx > 0 {
+                corpus.push(b'\n');
+            }
+            corpus.extend_from_slice(&std::fs::read(p).unwrap());
+            if corpus.len() >= 32_768 {
+                break;
+            }
+        }
+        corpus.truncate(32_768);
+
+        let cfg = EncodeConfig {
+            max_words: 1024,
+            min_freq: 3,
+            sort_order: SortOrder::Discovery,
+            debug_dict_path: None,
+        };
+        let (dict, tokens, _report) = encode_bytes(&corpus, &cfg).unwrap();
+        let decoded = decode_tokens(&tokens, &dict).unwrap();
+        assert_eq!(decoded, corpus);
     }
 }

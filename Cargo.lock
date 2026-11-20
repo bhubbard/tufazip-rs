@@ -2358,8 +2358,14 @@ name = "tufazip-cli"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "candle-core",
  "clap",
+ "hex",
+ "rand",
+ "rand_chacha",
+ "serde",
  "serde_json",
+ "sha2",
  "signal-hook",
  "tempfile",
  "tracing",

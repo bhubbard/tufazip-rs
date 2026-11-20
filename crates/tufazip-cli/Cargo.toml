@@ -34,5 +34,13 @@ tufazip-codec = { path = "../tufazip-codec" }
 tufazip-preprocess = { path = "../tufazip-preprocess" }
 tufazip-prior = { path = "../tufazip-prior" }
 
+[dev-dependencies]
+candle-core.workspace = true
+hex.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+serde.workspace = true
+sha2.workspace = true
+
 [lints]
 workspace = true

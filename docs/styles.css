@@ -598,6 +598,54 @@ tbody td a {
   --label-3: "What It Verifies";
 }
 
+.bench-core-table {
+  --label-2: "Measured Time";
+  --label-3: "Throughput";
+  --label-4: "Parity & Notes";
+}
+
+.bench-backends-table {
+  --label-2: "Pure-Rust CPU";
+  --label-3: "Accelerate BLAS";
+  --label-4: "Apple Metal GPU";
+}
+
+.bench-ratio-table {
+  --label-2: "Payload Bytes";
+  --label-3: "Total Archive";
+  --label-4: "Time & Verification";
+}
+
+.subhead {
+  margin-block: 1.5rem 0.75rem;
+  font-size: 1.0625rem;
+}
+
+.bench-gap {
+  margin-block-end: 1.5rem;
+}
+
+.bar-track {
+  margin-block-start: 0.45rem;
+  inline-size: 100%;
+  max-inline-size: 12rem;
+  block-size: 0.375rem;
+  border-radius: 0.125rem;
+  background-color: var(--surface-2);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.bar-fill {
+  inline-size: clamp(4%, var(--pct, 50%), 100%);
+  block-size: 100%;
+  background-color: var(--accent-2);
+}
+
+.bar-fill-accent {
+  background-color: var(--accent);
+}
+
 @container (width < 600px) {
   .table-wrapper {
     border: none;
