@@ -12,8 +12,8 @@ use crate::error::PreprocessError;
 
 const NS: usize = 256;
 const MAX_WORDS_PER_ITER: usize = 100;
-const SUBST_COST: f32 = 7.0;
-const TOT_FREQ_RED_BITS: f32 = 1.3;
+const SUBST_COST: f64 = 7.0;
+const TOT_FREQ_RED_BITS: f64 = 1.3;
 
 /// Ordering applied to the final dictionary entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -128,9 +128,9 @@ fn compute_score(entry: &WordEntry, cw: &WordList, char_freq: &[u32; NS], tot_fr
     let old_bits = (get_n_bits(usize::from(entry.pair[0]), cw, char_freq, tot_freq)
         + get_n_bits(usize::from(entry.pair[1]), cw, char_freq, tot_freq))
         * (entry.freq as f32);
-    let new_bits = (-((f64::from(entry.freq) / tot_freq as f64).log2() as f32) + TOT_FREQ_RED_BITS)
-        * (entry.freq as f32)
-        + SUBST_COST;
+    let new_bits = ((-(f64::from(entry.freq) / tot_freq as f64).log2() + TOT_FREQ_RED_BITS)
+        * f64::from(entry.freq)
+        + SUBST_COST) as f32;
     old_bits - new_bits
 }
 

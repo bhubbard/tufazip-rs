@@ -2346,6 +2346,8 @@ dependencies = [
 name = "tufazip-arith"
 version = "0.2.0"
 dependencies = [
+ "rand",
+ "rand_chacha",
  "serde",
  "tempfile",
  "thiserror 2.0.21",
