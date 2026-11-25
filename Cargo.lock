@@ -2344,7 +2344,7 @@ dependencies = [
 
 [[package]]
 name = "tufazip-arith"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "rand",
  "rand_chacha",
@@ -2355,7 +2355,7 @@ dependencies = [
 
 [[package]]
 name = "tufazip-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "candle-core",
@@ -2378,7 +2378,7 @@ dependencies = [
 
 [[package]]
 name = "tufazip-codec"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "candle-core",
  "candle-nn",
@@ -2400,7 +2400,7 @@ dependencies = [
 
 [[package]]
 name = "tufazip-preprocess"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "sha2",
  "tempfile",
@@ -2409,7 +2409,7 @@ dependencies = [
 
 [[package]]
 name = "tufazip-prior"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "half",
  "hex",
