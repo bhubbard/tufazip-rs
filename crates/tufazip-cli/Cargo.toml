@@ -7,6 +7,7 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
+readme.workspace = true
 documentation = "https://code.brandonhubbard.com/tufazip-rs/api/tufazip/"
 description = "Command-line interface for tufazip pure-Rust neural lossless compression and decompression"
 
@@ -29,10 +30,10 @@ signal-hook.workspace = true
 tempfile.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-tufazip-arith = { version = "0.2.0", path = "../tufazip-arith" }
-tufazip-codec = { version = "0.2.0", path = "../tufazip-codec" }
-tufazip-preprocess = { version = "0.2.0", path = "../tufazip-preprocess" }
-tufazip-prior = { version = "0.2.0", path = "../tufazip-prior" }
+tufazip-arith = { version = "0.2.1", path = "../tufazip-arith" }
+tufazip-codec = { version = "0.2.1", path = "../tufazip-codec" }
+tufazip-preprocess = { version = "0.2.1", path = "../tufazip-preprocess" }
+tufazip-prior = { version = "0.2.1", path = "../tufazip-prior" }
 
 [dev-dependencies]
 candle-core.workspace = true

@@ -7,6 +7,7 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
+readme.workspace = true
 documentation = "https://code.brandonhubbard.com/tufazip-rs/api/tufazip_codec/"
 description = "Neural Transformer arithmetic codec, online Adam trainer, prefix replay, and checkpointing for tufazip"
 
@@ -30,8 +31,8 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-tufazip-arith = { version = "0.2.0", path = "../tufazip-arith" }
-tufazip-prior = { version = "0.2.0", path = "../tufazip-prior" }
+tufazip-arith = { version = "0.2.1", path = "../tufazip-arith" }
+tufazip-prior = { version = "0.2.1", path = "../tufazip-prior" }
 
 [dev-dependencies]
 tempfile.workspace = true
