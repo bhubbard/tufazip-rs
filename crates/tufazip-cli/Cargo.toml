@@ -29,10 +29,10 @@ signal-hook.workspace = true
 tempfile.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-tufazip-arith = { path = "../tufazip-arith" }
-tufazip-codec = { path = "../tufazip-codec" }
-tufazip-preprocess = { path = "../tufazip-preprocess" }
-tufazip-prior = { path = "../tufazip-prior" }
+tufazip-arith = { version = "0.2.0", path = "../tufazip-arith" }
+tufazip-codec = { version = "0.2.0", path = "../tufazip-codec" }
+tufazip-preprocess = { version = "0.2.0", path = "../tufazip-preprocess" }
+tufazip-prior = { version = "0.2.0", path = "../tufazip-prior" }
 
 [dev-dependencies]
 candle-core.workspace = true
